@@ -19,12 +19,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install NDK and Build Tools
+      - name: Accept Android Licenses and Install NDK
         run: |
-          sdkmanager --install "ndk;26.1.10909125" "platforms;android-34" "build-tools;34.0.0"
+          yes | sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125" "platforms;android-34" "build-tools;34.0.0"
+          sudo apt-get update && sudo apt-get install -y librsvg2-bin || true
 
       - name: Download SDL2 Libraries
         run: |
@@ -41,8 +40,20 @@ jobs:
           mv SDL2-2.30.8 ./android-build/app/jni/SDL2
           mv SDL2_image-2.8.2 ./android-build/app/jni/SDL2_image
           mv SDL2_mixer-2.8.0 ./android-build/app/jni/SDL2_mixer
-          sed -i 's/SUPPORT_WAV ?= true/SUPPORT_WAV ?= true\nSUPPORT_OGG := false\nSUPPORT_FLAC := false\nSUPPORT_MP3 := false\nSUPPORT_MID_TIMIDITY := false\nSUPPORT_MOD_XMP := false\nSUPPORT_OPUS := false/g' ./android-build/app/jni/SDL2_mixer/Android.mk
-          sed -i 's/SUPPORT_JPG ?= true/SUPPORT_JPG ?= false\nSUPPORT_WEBP := false\nSUPPORT_AVIF := false\nSUPPORT_JXL := false\nSUPPORT_TIF := false/g' ./android-build/app/jni/SDL2_image/Android.mk
+          sed -i 's/SUPPORT_JPG ?= true/SUPPORT_JPG := false/g' ./android-build/app/jni/SDL2_image/Android.mk
+          sed -i 's/SUPPORT_WEBP ?= true/SUPPORT_WEBP := false/g' ./android-build/app/jni/SDL2_image/Android.mk
+          sed -i 's/SUPPORT_AVIF ?= true/SUPPORT_AVIF := false/g' ./android-build/app/jni/SDL2_image/Android.mk
+          sed -i 's/SUPPORT_JXL ?= true/SUPPORT_JXL := false/g' ./android-build/app/jni/SDL2_image/Android.mk
+          sed -i 's/SUPPORT_TIF ?= true/SUPPORT_TIF := false/g' ./android-build/app/jni/SDL2_image/Android.mk
+          sed -i 's/LOAD_SVG ?= false/LOAD_SVG := true/g' ./android-build/app/jni/SDL2_image/Android.mk || true
+          sed -i 's/SUPPORT_SVG ?= false/SUPPORT_SVG := true/g' ./android-build/app/jni/SDL2_image/Android.mk || true
+          sed -i 's/SUPPORT_OGG ?= true/SUPPORT_OGG := false/g' ./android-build/app/jni/SDL2_mixer/Android.mk
+          sed -i 's/SUPPORT_FLAC ?= true/SUPPORT_FLAC := false/g' ./android-build/app/jni/SDL2_mixer/Android.mk
+          sed -i 's/SUPPORT_MP3_MPG123 ?= true/SUPPORT_MP3_MPG123 := false/g' ./android-build/app/jni/SDL2_mixer/Android.mk
+          sed -i 's/SUPPORT_MOD_XMP ?= true/SUPPORT_MOD_XMP := false/g' ./android-build/app/jni/SDL2_mixer/Android.mk
+          sed -i 's/SUPPORT_MID_TIMIDITY ?= true/SUPPORT_MID_TIMIDITY := false/g' ./android-build/app/jni/SDL2_mixer/Android.mk
+          sed -i 's/SUPPORT_OPUS ?= true/SUPPORT_OPUS := false/g' ./android-build/app/jni/SDL2_mixer/Android.mk
+          sed -i 's/SUPPORT_WAVPACK ?= true/SUPPORT_WAVPACK := false/g' ./android-build/app/jni/SDL2_mixer/Android.mk
           mkdir -p ./android-build/app/jni/SDL2/include/SDL2
           cp ./android-build/app/jni/SDL2/include/*.h ./android-build/app/jni/SDL2/include/SDL2/ 2>/dev/null || true
           cp ./android-build/app/jni/SDL2_image/SDL_image.h ./android-build/app/jni/SDL2/include/SDL2/ 2>/dev/null || true
@@ -53,6 +64,11 @@ jobs:
           cp -r src/* ./android-build/app/jni/src/
           mkdir -p ./android-build/app/src/main/assets
           cp -r assets/* ./android-build/app/src/main/assets/
+          for svg in ./android-build/app/src/main/assets/*.svg; do
+            if [ -f "$svg" ]; then
+              rsvg-convert "$svg" -o "${svg%.svg}.png" 2>/dev/null || true
+            fi
+          done
 
       - name: Generate Android.mk and Application.mk
         run: |
@@ -71,12 +87,14 @@ jobs:
       - name: Configure Landscape and Build APK
         run: |
           cd ./android-build
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "ndk.dir=$ANDROID_HOME/ndk/26.1.10909125" >> local.properties
           sed -i 's/android:name="SDLActivity"/android:name="SDLActivity" android:screenOrientation="sensorLandscape"/g' app/src/main/AndroidManifest.xml
           sed -i 's/abiFilters.*/abiFilters "arm64-v8a"/g' app/build.gradle
-          sed -i 's/\/\/[[:space:]]*"SDL2_image"/"SDL2_image"/g' app/src/main/java/org/libsdl/app/SDLActivity.java || true
-          sed -i 's/\/\/[[:space:]]*"SDL2_mixer"/"SDL2_mixer"/g' app/src/main/java/org/libsdl/app/SDLActivity.java || true
+          sed -i 's/\/\/[[:space:]]*"SDL2_image"/"SDL2_image"/g' app/src/main/java/org/libsdl/app/SDLActivity.java 2>/dev/null || true
+          sed -i 's/\/\/[[:space:]]*"SDL2_mixer"/"SDL2_mixer"/g' app/src/main/java/org/libsdl/app/SDLActivity.java 2>/dev/null || true
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
