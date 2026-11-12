@@ -73,7 +73,7 @@ jobs:
           printf "include \$(CLEAR_VARS)\n" >> ./android-build/app/jni/SDL2_image/Android.mk
           printf "LOCAL_MODULE := SDL2_image\n" >> ./android-build/app/jni/SDL2_image/Android.mk
           printf "LOCAL_C_INCLUDES := \$(LOCAL_PATH)/include \$(LOCAL_PATH)/src \$(LOCAL_PATH)/../SDL2/include\n" >> ./android-build/app/jni/SDL2_image/Android.mk
-          printf "LOCAL_CFLAGS := -DLOAD_BMP -DLOAD_PNG -DLOAD_SVG -DSDL_IMAGE_USE_COMMON_BACKEND\n" >> ./android-build/app/jni/SDL2_image/Android.mk
+          printf "LOCAL_CFLAGS := -DLOAD_BMP -DLOAD_PNG -DLOAD_JPG -DLOAD_SVG -DUSE_STBIMAGE -DSDL_IMAGE_USE_COMMON_BACKEND\n" >> ./android-build/app/jni/SDL2_image/Android.mk
           printf "LOCAL_SRC_FILES := \$(notdir \$(wildcard \$(LOCAL_PATH)/src/*.c))\n" >> ./android-build/app/jni/SDL2_image/Android.mk
           printf "LOCAL_SRC_FILES := \$(addprefix src/,\$(LOCAL_SRC_FILES))\n" >> ./android-build/app/jni/SDL2_image/Android.mk
           printf "LOCAL_SHARED_LIBRARIES := SDL2\n" >> ./android-build/app/jni/SDL2_image/Android.mk
