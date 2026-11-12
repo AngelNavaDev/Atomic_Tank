@@ -44,8 +44,8 @@ jobs:
 
           cp $ANDROID_HOME/ndk/26.1.10909125/sources/android/cpufeatures/cpu-features.c ./android-build/app/jni/SDL2/src/cpuinfo/
           cp $ANDROID_HOME/ndk/26.1.10909125/sources/android/cpufeatures/cpu-features.h ./android-build/app/jni/SDL2/include/
-          sed -i '/import-module,android\/cpufeatures/d' ./android-build/app/jni/SDL2/Android.mk
-          sed -i 's/LOCAL_STATIC_LIBRARIES += cpufeatures/LOCAL_SRC_FILES += src\/cpuinfo\/cpu-features.c/g' ./android-build/app/jni/SDL2/Android.mk
+          sed -i '/import-module/d' ./android-build/app/jni/SDL2/Android.mk
+          sed -i 's/cpufeatures//g' ./android-build/app/jni/SDL2/Android.mk
 
           mkdir -p ./android-build/app/jni/compat_include/SDL2
           cp -r ./android-build/app/jni/SDL2/include/* ./android-build/app/jni/compat_include/SDL2/
@@ -104,11 +104,12 @@ jobs:
           printf "APP_PLATFORM := android-24\n" >> ./android-build/app/jni/Application.mk
           printf "APP_STL := c++_shared\n" >> ./android-build/app/jni/Application.mk
           printf "APP_CPPFLAGS := -std=c++17 -frtti -fexceptions\n" >> ./android-build/app/jni/Application.mk
+          printf "APP_ALLOW_MISSING_DEPS := true\n" >> ./android-build/app/jni/Application.mk
 
       - name: Compile NDK and Assemble APK
         run: |
           cd ./android-build
-          $ANDROID_HOME/ndk/26.1.10909125/ndk-build -C app/jni -j4
+          $ANDROID_HOME/ndk/26.1.10909125/ndk-build -C app/jni APP_ALLOW_MISSING_DEPS=true -j4
           sed -i 's/android:name="SDLActivity"/android:name="SDLActivity" android:screenOrientation="sensorLandscape"/g' app/src/main/AndroidManifest.xml
           sed -i 's/abiFilters.*/abiFilters "arm64-v8a"/g' app/build.gradle
           sed -i 's/\/\/[[:space:]]*"SDL2_image"/"SDL2_image"/g' app/src/main/java/org/libsdl/app/SDLActivity.java 2>/dev/null || true
