@@ -84,7 +84,8 @@ jobs:
           printf "LOCAL_MODULE := SDL2_mixer\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
           printf "LOCAL_C_INCLUDES := \$(LOCAL_PATH)/include \$(LOCAL_PATH)/src \$(LOCAL_PATH)/src/codecs \$(LOCAL_PATH)/../SDL2/include\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
           printf "LOCAL_CFLAGS := -DMUSIC_WAV\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
-          printf "LOCAL_SRC_FILES := src/effects_internal.c src/effect_position.c src/effect_stereopan.c src/mixer.c src/music.c src/utils.c src/codecs/load_aiff.c src/codecs/load_voc.c src/codecs/mp3utils.c src/codecs/music_wav.c\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
+          printf "LOCAL_SRC_FILES := \$(notdir \$(wildcard \$(LOCAL_PATH)/src/*.c)) \$(addprefix codecs/,\$(notdir \$(wildcard \$(LOCAL_PATH)/src/codecs/*.c)))\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
+          printf "LOCAL_SRC_FILES := \$(addprefix src/,\$(LOCAL_SRC_FILES))\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
           printf "LOCAL_SHARED_LIBRARIES := SDL2\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
           printf "include \$(BUILD_SHARED_LIBRARY)\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
 
