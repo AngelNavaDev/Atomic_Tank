@@ -1,0 +1,227 @@
+name: Build Android APK (arm64-v8a)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Compile Android APK (arm64-v8a)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: 3. Set up Android SDK & NDK
+        uses: android-actions/setup-android@v3
+
+      - name: 4. Install Host Tools (librsvg, curl, tar)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin curl tar
+
+      - name: 5. Download Official SDL2 Source Releases
+        run: |
+          mkdir -p deps
+          cd deps
+
+          echo "Descargando SDL2-2.30.8..."
+          curl -sSL https://github.com/libsdl-org/SDL/releases/download/release-2.30.8/SDL2-2.30.8.tar.gz -o SDL2-2.30.8.tar.gz || \
+          curl -sSL https://www.libsdl.org/release/SDL2-2.30.8.tar.gz -o SDL2-2.30.8.tar.gz
+          tar -xzf SDL2-2.30.8.tar.gz
+
+          echo "Descargando SDL2_image-2.8.2..."
+          curl -sSL https://github.com/libsdl-org/SDL_image/releases/download/release-2.8.2/SDL2_image-2.8.2.tar.gz -o SDL2_image-2.8.2.tar.gz || \
+          curl -sSL https://www.libsdl.org/projects/SDL_image/release/SDL2_image-2.8.2.tar.gz -o SDL2_image-2.8.2.tar.gz
+          tar -xzf SDL2_image-2.8.2.tar.gz
+
+          echo "Descargando SDL2_mixer-2.8.0..."
+          curl -sSL https://github.com/libsdl-org/SDL_mixer/releases/download/release-2.8.0/SDL2_mixer-2.8.0.tar.gz -o SDL2_mixer-2.8.0.tar.gz || \
+          curl -sSL https://www.libsdl.org/projects/SDL_mixer/release/SDL2_mixer-2.8.0.tar.gz -o SDL2_mixer-2.8.0.tar.gz
+          tar -xzf SDL2_mixer-2.8.0.tar.gz
+          cd ..
+
+      - name: 6. Prepare Android Gradle Project & JNI
+        run: |
+          # Copiar la plantilla android-project de SDL2 resolviendo symlinks
+          cp -L -r deps/SDL2-2.30.8/android-project ./android-project
+          cd android-project
+
+          # Configurar JNI
+          mkdir -p app/jni
+          cp -L -r ../deps/SDL2-2.30.8 app/jni/SDL
+          cp -L -r ../deps/SDL2_image-2.8.2 app/jni/SDL2_image
+          cp -L -r ../deps/SDL2_mixer-2.8.0 app/jni/SDL2_mixer
+
+          # Crear directorio de cabeceras SDL2 para compatibilidad con #include <SDL2/SDL.h>
+          mkdir -p app/jni/SDL2
+          cp -r app/jni/SDL/include/* app/jni/SDL2/
+          cp app/jni/SDL2_image/SDL_image.h app/jni/SDL2/ 2>/dev/null || cp app/jni/SDL2_image/include/SDL2/SDL_image.h app/jni/SDL2/ 2>/dev/null || true
+          cp app/jni/SDL2_mixer/SDL_mixer.h app/jni/SDL2/ 2>/dev/null || cp app/jni/SDL2_mixer/include/SDL2/SDL_mixer.h app/jni/SDL2/ 2>/dev/null || true
+
+          # Copiar código fuente C++ a app/jni/src/
+          mkdir -p app/jni/src
+          cp -r ../src/* app/jni/src/
+
+          # Asegurar que los fuentes Java de SDL están en app/src/main/java
+          mkdir -p app/src/main/java/org/libsdl/app
+          if [ -d "app/jni/SDL/android-project/app/src/main/java" ]; then
+            cp -L -r app/jni/SDL/android-project/app/src/main/java/* app/src/main/java/ || true
+          fi
+          if [ -d "app/jni/SDL/src/main/java" ]; then
+            cp -L -r app/jni/SDL/src/main/java/* app/src/main/java/ || true
+          fi
+
+          # Habilitar carga de SDL2_image y SDL2_mixer en SDLActivity.java
+          if [ -f "app/src/main/java/org/libsdl/app/SDLActivity.java" ]; then
+            sed -i 's/\/\/[[:space:]]*"SDL2_image"/"SDL2_image"/g' app/src/main/java/org/libsdl/app/SDLActivity.java || true
+            sed -i 's/\/\/[[:space:]]*"SDL2_mixer"/"SDL2_mixer"/g' app/src/main/java/org/libsdl/app/SDLActivity.java || true
+          fi
+
+          # Configurar Application.mk (arm64-v8a)
+          cat << 'EOF' > app/jni/Application.mk
+APP_ABI := arm64-v8a
+APP_PLATFORM := android-21
+APP_STL := c++_shared
+EOF
+
+          # Configurar app/jni/Android.mk
+          cat << 'EOF' > app/jni/Android.mk
+LOCAL_PATH := $(call my-dir)
+
+include $(LOCAL_PATH)/SDL/Android.mk
+include $(LOCAL_PATH)/SDL2_image/Android.mk
+include $(LOCAL_PATH)/SDL2_mixer/Android.mk
+include $(LOCAL_PATH)/src/Android.mk
+EOF
+
+          # Habilitar SVG en SDL2_image/Android.mk
+          sed -i 's/SUPPORT_SVG ?= false/SUPPORT_SVG ?= true/g' app/jni/SDL2_image/Android.mk || true
+          sed -i 's/SUPPORT_SVG := false/SUPPORT_SVG := true/g' app/jni/SDL2_image/Android.mk || true
+          sed -i 's/LOAD_SVG ?= false/LOAD_SVG ?= true/g' app/jni/SDL2_image/Android.mk || true
+          sed -i 's/LOAD_SVG := false/LOAD_SVG := true/g' app/jni/SDL2_image/Android.mk || true
+          sed -i 's/SUPPORT_WEBP ?= true/SUPPORT_WEBP ?= false/g' app/jni/SDL2_image/Android.mk || true
+          sed -i 's/SUPPORT_AVIF ?= true/SUPPORT_AVIF ?= false/g' app/jni/SDL2_image/Android.mk || true
+          sed -i 's/SUPPORT_JXL ?= true/SUPPORT_JXL ?= false/g' app/jni/SDL2_image/Android.mk || true
+          sed -i 's/SUPPORT_TIF ?= true/SUPPORT_TIF ?= false/g' app/jni/SDL2_image/Android.mk || true
+
+          # Optimizar SDL2_mixer/Android.mk para evitar dependencias externas faltantes
+          sed -i 's/SUPPORT_MOD_PLUG ?= true/SUPPORT_MOD_PLUG ?= false/g' app/jni/SDL2_mixer/Android.mk || true
+          sed -i 's/SUPPORT_MOD_MIKMOD ?= true/SUPPORT_MOD_MIKMOD ?= false/g' app/jni/SDL2_mixer/Android.mk || true
+          sed -i 's/SUPPORT_MP3_MPG123 ?= true/SUPPORT_MP3_MPG123 ?= false/g' app/jni/SDL2_mixer/Android.mk || true
+          sed -i 's/SUPPORT_FLAC ?= true/SUPPORT_FLAC ?= false/g' app/jni/SDL2_mixer/Android.mk || true
+          sed -i 's/SUPPORT_OPUS ?= true/SUPPORT_OPUS ?= false/g' app/jni/SDL2_mixer/Android.mk || true
+
+          # Configurar app/jni/src/Android.mk
+          cat << 'EOF' > app/jni/src/Android.mk
+LOCAL_PATH := $(call my-dir)
+
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := main
+
+SDL_PATH := ../SDL
+SDL_IMAGE_PATH := ../SDL2_image
+SDL_MIXER_PATH := ../SDL2_mixer
+
+LOCAL_C_INCLUDES := $(LOCAL_PATH) \
+                    $(LOCAL_PATH)/.. \
+                    $(LOCAL_PATH)/$(SDL_PATH)/include \
+                    $(LOCAL_PATH)/$(SDL_IMAGE_PATH) \
+                    $(LOCAL_PATH)/$(SDL_MIXER_PATH)
+
+LOCAL_SRC_FILES := \
+    main.cpp \
+    core/AssetManager.cpp \
+    core/AudioManager.cpp \
+    core/Engine.cpp \
+    core/LevelManager.cpp \
+    entities/Boss.cpp \
+    entities/EnemyPool.cpp \
+    entities/ParticlePool.cpp \
+    entities/PowerUpPool.cpp \
+    entities/ProjectilePool.cpp \
+    entities/Tank.cpp \
+    input/InputManager.cpp
+
+LOCAL_CPPFLAGS := -std=c++17 -Wall -Wextra -fexceptions -frtti
+LOCAL_SHARED_LIBRARIES := SDL2 SDL2_image SDL2_mixer
+LOCAL_LDLIBS := -lGLESv1_CM -lGLESv2 -lOpenSLES -llog -landroid
+
+include $(BUILD_SHARED_LIBRARY)
+EOF
+
+          # Copiar assets y convertir SVGs a PNG de respaldo
+          mkdir -p app/src/main/assets
+          cp -r ../assets/* app/src/main/assets/
+          echo "Generando versiones PNG de respaldo con rsvg-convert..."
+          for svg in app/src/main/assets/*.svg; do
+            if [ -f "$svg" ]; then
+              png="${svg%.svg}.png"
+              echo "Renderizando $svg -> $png"
+              rsvg-convert "$svg" -o "$png" || true
+            fi
+          done
+
+          # Configurar orientación horizontal fija (sensorLandscape)
+          if [ -f "app/src/main/AndroidManifest.xml" ]; then
+            if grep -q "android:screenOrientation=" app/src/main/AndroidManifest.xml; then
+              sed -i 's/android:screenOrientation="[^"]*"/android:screenOrientation="sensorLandscape"/g' app/src/main/AndroidManifest.xml
+            else
+              sed -i 's/<activity /<activity android:screenOrientation="sensorLandscape" /g' app/src/main/AndroidManifest.xml
+            fi
+          fi
+
+          # Título de la aplicación
+          sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">Atomic Tank<\/string>/g' app/src/main/res/values/strings.xml 2>/dev/null || true
+
+          # Configurar local.properties y detectar NDK instalado
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          NDK_PATH=$(ls -d $ANDROID_HOME/ndk/* 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$NDK_PATH" ]; then
+            echo "ndk.dir=$NDK_PATH" >> local.properties
+            NDK_VER=$(basename "$NDK_PATH")
+            echo "NDK detectado: $NDK_PATH (Versión: $NDK_VER)"
+            if ! grep -q "ndkVersion" app/build.gradle; then
+              sed -i "/android {/a \    ndkVersion '$NDK_VER'" app/build.gradle || true
+            fi
+          fi
+
+          # Asegurar namespace para compatibilidad con AGP 8
+          if ! grep -q "namespace" app/build.gradle; then
+            sed -i '/android {/a \    namespace "org.libsdl.app"' app/build.gradle || true
+          fi
+
+          # Forzar solo arquitectura arm64-v8a en app/build.gradle
+          sed -i "s/'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'/'arm64-v8a'/g" app/build.gradle || true
+          sed -i "s/'armeabi-v7a', 'arm64-v8a'/'arm64-v8a'/g" app/build.gradle || true
+
+          # Permisos de ejecución para el wrapper Gradle
+          chmod +x gradlew
+
+      - name: 7. Build APK with Gradle
+        run: |
+          cd android-project
+          ./gradlew assembleDebug --stacktrace
+
+      - name: 8. Collect APK Artifact
+        run: |
+          mkdir -p artifact_out
+          find android-project/app/build/outputs/apk -name "*.apk" -exec cp {} artifact_out/AtomicTank-arm64-v8a-debug.apk \;
+          echo "Contenido de artifact_out:"
+          ls -la artifact_out/
+
+      - name: 9. Upload APK as Downloadable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AtomicTank-Android-APK
+          path: artifact_out/AtomicTank-arm64-v8a-debug.apk
+          if-no-files-found: error

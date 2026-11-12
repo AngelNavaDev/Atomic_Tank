@@ -1,0 +1,22 @@
+# Build and IDE directories
+/build/
+.vs/
+.vscode/
+
+# Compiled Binaries and Objects
+*.exe
+*.o
+*.obj
+*.dll
+*.so
+*.dylib
+*.a
+
+# Game saves and runtime data
+savegame.dat
+
+# Gradle and Android build artifacts
+.gradle/
+local.properties
+*.apk
+*.aab
