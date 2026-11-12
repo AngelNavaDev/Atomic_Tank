@@ -98,7 +98,7 @@ uint64_t EnemyPool::calculateKillScore(EnemyType type, int level) noexcept {
     const uint64_t scaledScore = static_cast<uint64_t>(static_cast<float>(baseScore) * levelMultiplier);
 
     // Tope estricto de 1,500 pts por avión en dificultad máxima
-    return std::min(scaledScore, 1500ULL);
+    return std::min<uint64_t>(scaledScore, 1500ULL);
 }
 
 void EnemyPool::spawnEnemy(EnemyType type, int direction, float startY, int currentLevel) {

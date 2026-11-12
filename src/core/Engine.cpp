@@ -9,6 +9,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 #include <algorithm>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
