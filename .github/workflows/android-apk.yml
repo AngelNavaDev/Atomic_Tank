@@ -112,17 +112,73 @@ jobs:
           cd ./android-build
           $ANDROID_HOME/ndk/26.1.10909125/ndk-build -C app/jni APP_ALLOW_MISSING_DEPS=true -j4
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          cp -f app/libs/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/ || true
+          cp -f app/libs/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/
           printf "sdk.dir=%s\n" "$ANDROID_HOME" > local.properties
           sed -i 's/android:name="SDLActivity"/android:name="SDLActivity" android:screenOrientation="sensorLandscape"/g' app/src/main/AndroidManifest.xml
-          sed -i 's/abiFilters.*/abiFilters "arm64-v8a"/g' app/build.gradle
-          sed -i 's/APP_PLATFORM=android-[0-9]*/APP_PLATFORM=android-24/g' app/build.gradle
-          sed -i 's/minSdkVersion [0-9]*/minSdkVersion 24/g' app/build.gradle
+          sed -i 's/package="[^"]*"//g' app/src/main/AndroidManifest.xml
           sed -i 's/\/\/[[:space:]]*"SDL2_image"/"SDL2_image"/g' app/src/main/java/org/libsdl/app/SDLActivity.java 2>/dev/null || true
           sed -i 's/\/\/[[:space:]]*"SDL2_mixer"/"SDL2_mixer"/g' app/src/main/java/org/libsdl/app/SDLActivity.java 2>/dev/null || true
-          gradle wrapper --gradle-version 8.4
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+
+          printf "include ':app'\n" > settings.gradle
+          printf "org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8\n" > gradle.properties
+
+          printf "buildscript {\n" > build.gradle
+          printf "    repositories {\n" >> build.gradle
+          printf "        google()\n" >> build.gradle
+          printf "        mavenCentral()\n" >> build.gradle
+          printf "    }\n" >> build.gradle
+          printf "    dependencies {\n" >> build.gradle
+          printf "        classpath 'com.android.tools.build:gradle:8.1.4'\n" >> build.gradle
+          printf "    }\n" >> build.gradle
+          printf "}\n" >> build.gradle
+          printf "allprojects {\n" >> build.gradle
+          printf "    repositories {\n" >> build.gradle
+          printf "        google()\n" >> build.gradle
+          printf "        mavenCentral()\n" >> build.gradle
+          printf "    }\n" >> build.gradle
+          printf "}\n" >> build.gradle
+
+          printf "plugins {\n" > app/build.gradle
+          printf "    id 'com.android.application'\n" >> app/build.gradle
+          printf "}\n" >> app/build.gradle
+          printf "android {\n" >> app/build.gradle
+          printf "    namespace 'org.libsdl.app'\n" >> app/build.gradle
+          printf "    compileSdk 34\n" >> app/build.gradle
+          printf "    defaultConfig {\n" >> app/build.gradle
+          printf "        applicationId 'org.libsdl.atomicweapon'\n" >> app/build.gradle
+          printf "        minSdk 24\n" >> app/build.gradle
+          printf "        targetSdk 34\n" >> app/build.gradle
+          printf "        versionCode 1\n" >> app/build.gradle
+          printf "        versionName '1.0'\n" >> app/build.gradle
+          printf "        ndk {\n" >> app/build.gradle
+          printf "            abiFilters 'arm64-v8a'\n" >> app/build.gradle
+          printf "        }\n" >> app/build.gradle
+          printf "    }\n" >> app/build.gradle
+          printf "    sourceSets {\n" >> app/build.gradle
+          printf "        main {\n" >> app/build.gradle
+          printf "            manifest.srcFile 'src/main/AndroidManifest.xml'\n" >> app/build.gradle
+          printf "            java.srcDirs = ['src/main/java']\n" >> app/build.gradle
+          printf "            res.srcDirs = ['src/main/res']\n" >> app/build.gradle
+          printf "            assets.srcDirs = ['src/main/assets']\n" >> app/build.gradle
+          printf "            jniLibs.srcDirs = ['src/main/jniLibs']\n" >> app/build.gradle
+          printf "        }\n" >> app/build.gradle
+          printf "    }\n" >> app/build.gradle
+          printf "    lint {\n" >> app/build.gradle
+          printf "        abortOnError false\n" >> app/build.gradle
+          printf "        checkReleaseBuilds false\n" >> app/build.gradle
+          printf "    }\n" >> app/build.gradle
+          printf "    buildFeatures {\n" >> app/build.gradle
+          printf "        buildConfig true\n" >> app/build.gradle
+          printf "    }\n" >> app/build.gradle
+          printf "    compileOptions {\n" >> app/build.gradle
+          printf "        sourceCompatibility JavaVersion.VERSION_1_8\n" >> app/build.gradle
+          printf "        targetCompatibility JavaVersion.VERSION_1_8\n" >> app/build.gradle
+          printf "    }\n" >> app/build.gradle
+          printf "}\n" >> app/build.gradle
+
+          wget -q https://services.gradle.org/distributions/gradle-8.4-bin.zip
+          unzip -q gradle-8.4-bin.zip
+          ./gradle-8.4/bin/gradle assembleDebug --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
