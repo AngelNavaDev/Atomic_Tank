@@ -110,6 +110,10 @@ jobs:
       - name: Compile NDK and Assemble APK
         run: |
           cd ./android-build
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/.config" "$HOME/.android" 2>/dev/null || true
+          export ANDROID_USER_HOME="$GITHUB_WORKSPACE/.android-user"
+          mkdir -p "$ANDROID_USER_HOME"
+          keytool -genkeypair -noprompt -keystore "$ANDROID_USER_HOME/debug.keystore" -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           $ANDROID_HOME/ndk/26.1.10909125/ndk-build -C app/jni APP_ALLOW_MISSING_DEPS=true -j4
           mkdir -p app/src/main/jniLibs/arm64-v8a
           cp -f app/libs/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/
@@ -154,6 +158,19 @@ jobs:
           printf "            abiFilters 'arm64-v8a'\n" >> app/build.gradle
           printf "        }\n" >> app/build.gradle
           printf "    }\n" >> app/build.gradle
+          printf "    signingConfigs {\n" >> app/build.gradle
+          printf "        debug {\n" >> app/build.gradle
+          printf "            storeFile file(System.getenv('ANDROID_USER_HOME') + '/debug.keystore')\n" >> app/build.gradle
+          printf "            storePassword 'android'\n" >> app/build.gradle
+          printf "            keyAlias 'androiddebugkey'\n" >> app/build.gradle
+          printf "            keyPassword 'android'\n" >> app/build.gradle
+          printf "        }\n" >> app/build.gradle
+          printf "    }\n" >> app/build.gradle
+          printf "    buildTypes {\n" >> app/build.gradle
+          printf "        debug {\n" >> app/build.gradle
+          printf "            signingConfig signingConfigs.debug\n" >> app/build.gradle
+          printf "        }\n" >> app/build.gradle
+          printf "    }\n" >> app/build.gradle
           printf "    sourceSets {\n" >> app/build.gradle
           printf "        main {\n" >> app/build.gradle
           printf "            manifest.srcFile 'src/main/AndroidManifest.xml'\n" >> app/build.gradle
@@ -178,7 +195,8 @@ jobs:
 
           wget -q https://services.gradle.org/distributions/gradle-8.4-bin.zip
           unzip -q gradle-8.4-bin.zip
-          ./gradle-8.4/bin/gradle assembleDebug --no-daemon
+          ./gradle-8.4/bin/gradle assembleDebug --no-daemon --stacktrace
+          ls -la app/build/outputs/apk/debug/
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
