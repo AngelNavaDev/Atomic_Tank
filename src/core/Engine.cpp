@@ -4,9 +4,16 @@
 #include "math/Collision.hpp"
 #include <iostream>
 #include <string_view>
-#include <cstdint>
-#include <algorithm>
 #include <cmath>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <cstdlib>
+#include <array>
+#include <string>
 
 namespace {
 
@@ -456,9 +463,15 @@ void Engine::shutdown() {
 }
 
 void Engine::saveProgress() {
-    SDL_RWops* file = SDL_RWFromFile("savegame.dat", "wb");
+    std::string savePath = "savegame.dat";
+    if (char* prefPath = SDL_GetPrefPath("LegacyTechSolutions", "AtomicWeapon")) {
+        savePath = std::string(prefPath) + "savegame.dat";
+        SDL_free(prefPath);
+    }
+
+    SDL_RWops* file = SDL_RWFromFile(savePath.c_str(), "wb");
     if (!file) {
-        std::cerr << "[WARNING] No se pudo abrir savegame.dat para escritura.\n";
+        std::cerr << "[WARNING] No se pudo abrir " << savePath << " para escritura.\n";
         return;
     }
     SaveHeader header{};
@@ -478,7 +491,7 @@ void Engine::saveProgress() {
     header.campaignCompleted = (m_campaignCompleted || m_isCampaignWon) ? 1 : 0;
     SDL_RWwrite(file, &header, sizeof(SaveHeader), 1);
     SDL_RWclose(file);
-    std::cout << "[SISTEMA] Progreso guardado: Nivel Máx = " << m_maxUnlockedLevel
+    std::cout << "[SISTEMA] Progreso guardado en " << savePath << ": Nivel Máx = " << m_maxUnlockedLevel
               << " | HighScore = " << m_highScore
               << " | Derribos = " << m_totalEnemiesKilled
               << " | Jefes = " << m_totalBossesDefeated
@@ -486,7 +499,17 @@ void Engine::saveProgress() {
 }
 
 void Engine::loadProgress() {
-    SDL_RWops* file = SDL_RWFromFile("savegame.dat", "rb");
+    std::string savePath = "savegame.dat";
+    if (char* prefPath = SDL_GetPrefPath("LegacyTechSolutions", "AtomicWeapon")) {
+        savePath = std::string(prefPath) + "savegame.dat";
+        SDL_free(prefPath);
+    }
+
+    SDL_RWops* file = SDL_RWFromFile(savePath.c_str(), "rb");
+    if (!file) {
+        // Fallback por si hubiera un savegame.dat previo en el directorio local
+        file = SDL_RWFromFile("savegame.dat", "rb");
+    }
     if (!file) {
         std::cout << "[SISTEMA] No se encontró savegame.dat. Inicializando nueva partida.\n";
         m_maxUnlockedLevel = 1;

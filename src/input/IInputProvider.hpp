@@ -1,7 +1,11 @@
 #pragma once
 
 #include "input/InputState.hpp"
-#include <SDL2/SDL_events.h>
+#if __has_include(<SDL2/SDL.h>)
+#include <SDL2/SDL.h>
+#else
+#include <SDL.h>
+#endif
 
 namespace Input {
 

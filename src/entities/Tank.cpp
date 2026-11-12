@@ -5,7 +5,15 @@
 #include "core/AudioManager.hpp"
 #include "math/MathUtils.hpp"
 #include <cmath>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <cstdlib>
+#include <array>
+#include <string>
 
 namespace Entities {
 

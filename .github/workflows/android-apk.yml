@@ -19,8 +19,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Accept Android Licenses and Install NDK
+      - name: Install System Tools and NDK
         run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin
           yes | sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           sudo $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;26.1.10909125" "platforms;android-34" "build-tools;34.0.0"
 
@@ -33,20 +35,18 @@ jobs:
           tar -xzf SDL2_image-2.8.2.tar.gz
           tar -xzf SDL2_mixer-2.8.0.tar.gz
 
-      - name: Prepare Android Project Structure and SDL2 Headers
+      - name: Prepare Android Project and Assets
         run: |
           cp -r SDL2-2.30.8/android-project ./android-build
           mv SDL2-2.30.8 ./android-build/app/jni/SDL2
           mv SDL2_image-2.8.2 ./android-build/app/jni/SDL2_image
           mv SDL2_mixer-2.8.0 ./android-build/app/jni/SDL2_mixer
 
-          # Copiar cpufeatures directo dentro de SDL2 para evitar cualquier fallo de ruta del NDK
           cp $ANDROID_HOME/ndk/26.1.10909125/sources/android/cpufeatures/cpu-features.c ./android-build/app/jni/SDL2/src/cpuinfo/
           cp $ANDROID_HOME/ndk/26.1.10909125/sources/android/cpufeatures/cpu-features.h ./android-build/app/jni/SDL2/include/
           sed -i '/import-module,android\/cpufeatures/d' ./android-build/app/jni/SDL2/Android.mk
           sed -i 's/LOCAL_STATIC_LIBRARIES += cpufeatures/LOCAL_SRC_FILES += src\/cpuinfo\/cpu-features.c/g' ./android-build/app/jni/SDL2/Android.mk
 
-          # Crear carpeta unificada include/SDL2/... para que #include <SDL2/SDL.h> funcione
           mkdir -p ./android-build/app/jni/compat_include/SDL2
           cp -r ./android-build/app/jni/SDL2/include/* ./android-build/app/jni/compat_include/SDL2/
           cp -r ./android-build/app/jni/SDL2_image/include/* ./android-build/app/jni/compat_include/SDL2/
@@ -54,15 +54,40 @@ jobs:
 
           rm -rf ./android-build/app/jni/src/*
           cp -r src/* ./android-build/app/jni/src/
+
           mkdir -p ./android-build/app/src/main/assets
           cp -r assets/* ./android-build/app/src/main/assets/
+          for svgfile in ./android-build/app/src/main/assets/*.svg; do
+            if [ -f "$svgfile" ]; then
+              pngfile="${svgfile%.svg}.png"
+              rsvg-convert "$svgfile" -o "$pngfile"
+            fi
+          done
 
-      - name: Generate Clean Android.mk and Application.mk
+      - name: Generate Self-Contained Android.mk Files
         run: |
-          # 1. Crear el Android.mk raíz explícito (sin wildcard defectuoso)
-          printf "include \$(call all-named-subdir-makefiles,SDL2 SDL2_image SDL2_mixer src)\n" > ./android-build/app/jni/Android.mk
+          printf "LOCAL_PATH := \$(call my-dir)\n" > ./android-build/app/jni/Android.mk
+          printf "include \$(call all-subdir-makefiles)\n" >> ./android-build/app/jni/Android.mk
 
-          # 2. Crear el Android.mk de nuestro juego (src/Android.mk)
+          printf "LOCAL_PATH := \$(call my-dir)\n" > ./android-build/app/jni/SDL2_image/Android.mk
+          printf "include \$(CLEAR_VARS)\n" >> ./android-build/app/jni/SDL2_image/Android.mk
+          printf "LOCAL_MODULE := SDL2_image\n" >> ./android-build/app/jni/SDL2_image/Android.mk
+          printf "LOCAL_C_INCLUDES := \$(LOCAL_PATH)/include \$(LOCAL_PATH)/src \$(LOCAL_PATH)/../SDL2/include\n" >> ./android-build/app/jni/SDL2_image/Android.mk
+          printf "LOCAL_CFLAGS := -DLOAD_BMP -DLOAD_PNG -DLOAD_SVG -DSDL_IMAGE_USE_COMMON_BACKEND\n" >> ./android-build/app/jni/SDL2_image/Android.mk
+          printf "LOCAL_SRC_FILES := \$(notdir \$(wildcard \$(LOCAL_PATH)/src/*.c))\n" >> ./android-build/app/jni/SDL2_image/Android.mk
+          printf "LOCAL_SRC_FILES := \$(addprefix src/,\$(LOCAL_SRC_FILES))\n" >> ./android-build/app/jni/SDL2_image/Android.mk
+          printf "LOCAL_SHARED_LIBRARIES := SDL2\n" >> ./android-build/app/jni/SDL2_image/Android.mk
+          printf "include \$(BUILD_SHARED_LIBRARY)\n" >> ./android-build/app/jni/SDL2_image/Android.mk
+
+          printf "LOCAL_PATH := \$(call my-dir)\n" > ./android-build/app/jni/SDL2_mixer/Android.mk
+          printf "include \$(CLEAR_VARS)\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
+          printf "LOCAL_MODULE := SDL2_mixer\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
+          printf "LOCAL_C_INCLUDES := \$(LOCAL_PATH)/include \$(LOCAL_PATH)/src \$(LOCAL_PATH)/src/codecs \$(LOCAL_PATH)/../SDL2/include\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
+          printf "LOCAL_CFLAGS := -DMUSIC_WAV\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
+          printf "LOCAL_SRC_FILES := src/effects_internal.c src/effect_position.c src/effect_stereopan.c src/mixer.c src/music.c src/utils.c src/codecs/load_aiff.c src/codecs/load_voc.c src/codecs/mp3utils.c src/codecs/music_wav.c\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
+          printf "LOCAL_SHARED_LIBRARIES := SDL2\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
+          printf "include \$(BUILD_SHARED_LIBRARY)\n" >> ./android-build/app/jni/SDL2_mixer/Android.mk
+
           CPP_FILES=$(cd ./android-build/app/jni/src && find . -name "*.cpp" | sed 's|^\./||' | tr '\n' ' ')
           printf "LOCAL_PATH := \$(call my-dir)\n" > ./android-build/app/jni/src/Android.mk
           printf "include \$(CLEAR_VARS)\n" >> ./android-build/app/jni/src/Android.mk
@@ -75,18 +100,15 @@ jobs:
           printf "LOCAL_LDLIBS := -lGLESv1_CM -lGLESv2 -llog -landroid\n" >> ./android-build/app/jni/src/Android.mk
           printf "include \$(BUILD_SHARED_LIBRARY)\n" >> ./android-build/app/jni/src/Android.mk
 
-          # 3. Crear Application.mk
           printf "APP_ABI := arm64-v8a\n" > ./android-build/app/jni/Application.mk
           printf "APP_PLATFORM := android-24\n" >> ./android-build/app/jni/Application.mk
           printf "APP_STL := c++_shared\n" >> ./android-build/app/jni/Application.mk
           printf "APP_CPPFLAGS := -std=c++17 -frtti -fexceptions\n" >> ./android-build/app/jni/Application.mk
-          printf "SUPPORT_JPG := false\nSUPPORT_WEBP := false\nSUPPORT_AVIF := false\nSUPPORT_JXL := false\nSUPPORT_TIF := false\nSUPPORT_SVG := true\n" >> ./android-build/app/jni/Application.mk
-          printf "SUPPORT_OGG := false\nSUPPORT_FLAC := false\nSUPPORT_MP3_MPG123 := false\nSUPPORT_MOD_XMP := false\nSUPPORT_MID_TIMIDITY := false\nSUPPORT_OPUS := false\nSUPPORT_WAVPACK := false\n" >> ./android-build/app/jni/Application.mk
 
       - name: Compile NDK and Assemble APK
         run: |
           cd ./android-build
-          $ANDROID_HOME/ndk/26.1.10909125/ndk-build NDK_PROJECT_PATH=app APP_BUILD_SCRIPT=app/jni/Android.mk NDK_APPLICATION_MK=app/jni/Application.mk -j4
+          $ANDROID_HOME/ndk/26.1.10909125/ndk-build -C app/jni -j4
           sed -i 's/android:name="SDLActivity"/android:name="SDLActivity" android:screenOrientation="sensorLandscape"/g' app/src/main/AndroidManifest.xml
           sed -i 's/abiFilters.*/abiFilters "arm64-v8a"/g' app/build.gradle
           sed -i 's/\/\/[[:space:]]*"SDL2_image"/"SDL2_image"/g' app/src/main/java/org/libsdl/app/SDLActivity.java 2>/dev/null || true

@@ -1,47 +1,36 @@
 #include "core/AssetManager.hpp"
 #include <iostream>
+#include <cmath>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <cstdlib>
+#include <array>
+#include <string>
 
 namespace Core {
 
 SDL_Surface* AssetManager::loadSurfaceWithFallbacks(const char* filename) {
-    // 1. Probar nombre directo (esencial para Android dentro de APK assets/)
-    SDL_Surface* surf = IMG_Load(filename);
-    if (surf) {
-        return surf;
+    std::string baseName(filename);
+    if (baseName.size() > 4 &&
+        (baseName.substr(baseName.size() - 4) == ".svg" || baseName.substr(baseName.size() - 4) == ".png")) {
+        baseName = baseName.substr(0, baseName.size() - 4);
     }
 
-    // 2. Probar carpeta local "assets/" (para ejecución de escritorio en raíz de proyecto)
-    std::string pathAssets = std::string("assets/") + filename;
-    surf = IMG_Load(pathAssets.c_str());
-    if (surf) {
-        return surf;
-    }
+    const std::array<std::string, 6> candidates = {{
+        baseName + ".png",
+        "assets/" + baseName + ".png",
+        "../assets/" + baseName + ".png",
+        baseName + ".svg",
+        "assets/" + baseName + ".svg",
+        "../assets/" + baseName + ".svg"
+    }};
 
-    // 3. Probar "../assets/" (para ejecución desde subdirectorio build/)
-    std::string pathParentAssets = std::string("../assets/") + filename;
-    surf = IMG_Load(pathParentAssets.c_str());
-    if (surf) {
-        return surf;
-    }
-
-    // 4. Fallback a formato .png de respaldo si el archivo solicitado es .svg
-    std::string nameStr(filename);
-    if (nameStr.size() > 4 && nameStr.substr(nameStr.size() - 4) == ".svg") {
-        std::string pngName = nameStr.substr(0, nameStr.size() - 4) + ".png";
-
-        surf = IMG_Load(pngName.c_str());
-        if (surf) {
-            return surf;
-        }
-
-        std::string pngAssets = std::string("assets/") + pngName;
-        surf = IMG_Load(pngAssets.c_str());
-        if (surf) {
-            return surf;
-        }
-
-        std::string pngParentAssets = std::string("../assets/") + pngName;
-        surf = IMG_Load(pngParentAssets.c_str());
+    for (const auto& path : candidates) {
+        SDL_Surface* surf = IMG_Load(path.c_str());
         if (surf) {
             return surf;
         }

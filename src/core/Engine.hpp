@@ -8,7 +8,11 @@
 #include "entities/ParticlePool.hpp"
 #include "entities/PowerUpPool.hpp"
 #include "entities/Boss.hpp"
+#if __has_include(<SDL2/SDL.h>)
 #include <SDL2/SDL.h>
+#else
+#include <SDL.h>
+#endif
 #include <cstdint>
 
 namespace Core {
