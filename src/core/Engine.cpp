@@ -33,7 +33,9 @@ struct SaveHeader {
     float bestSurvivalSeconds{0.0f};
     int totalUpgradesPurchased{0};
     uint8_t campaignCompleted{0};
-    uint8_t padding[16]{0};
+    uint8_t languageUserSet{0};
+    uint8_t language{0};
+    uint8_t padding[14]{0};
 };
 
 constexpr uint8_t FONT_5X7[59][5] = {
@@ -152,13 +154,24 @@ bool Engine::init(const char* title, int windowWidth, int windowHeight) {
         return false;
     }
 
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+#ifdef SDL_HINT_ANDROID_HIDE_SYSTEM_BARS
+    SDL_SetHint(SDL_HINT_ANDROID_HIDE_SYSTEM_BARS, "1");
+#endif
+
+#ifdef __ANDROID__
+    const Uint32 windowFlags = SDL_WINDOW_FULLSCREEN | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+#else
+    const Uint32 windowFlags = SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+#endif
+
     m_window = SDL_CreateWindow(
         title,
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
         windowWidth,
         windowHeight,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
+        windowFlags
     );
 
     if (!m_window) {
@@ -185,24 +198,57 @@ bool Engine::init(const char* title, int windowWidth, int windowHeight) {
         return false;
     }
 
-    if (SDL_RenderSetLogicalSize(m_renderer, LOGICAL_WIDTH, LOGICAL_HEIGHT) != 0) {
-        std::cerr << "[WARNING] Fallo al configurar resolución lógica: " << SDL_GetError() << '\n';
+    // Escalado horizontal extendido a pantalla completa sin barras negras (letterbox)
+    int outW = LOGICAL_WIDTH;
+    int outH = LOGICAL_HEIGHT;
+    SDL_GetRendererOutputSize(m_renderer, &outW, &outH);
+    if (outW > 0 && outH > 0) {
+        SDL_RenderSetScale(
+            m_renderer,
+            static_cast<float>(outW) / static_cast<float>(LOGICAL_WIDTH),
+            static_cast<float>(outH) / static_cast<float>(LOGICAL_HEIGHT)
+        );
     }
 
     Core::AssetManager::getInstance().init(m_renderer);
     Core::AudioManager::getInstance().init();
 
     m_inputManager.init();
+    detectSystemLanguage();
     loadProgress();
     resetGame();
-    m_gameState = GameState::Loading;
-    m_loadingTimer = 0.0f;
+    startLoadingScreen(GameState::MainMenu, 1.8f);
 
-    std::cout << "[INFO] Motor inicializado correctamente (" << LOGICAL_WIDTH << "x" << LOGICAL_HEIGHT << " lógica).\n";
+    std::cout << "[INFO] Motor inicializado correctamente (" << LOGICAL_WIDTH << "x" << LOGICAL_HEIGHT << " extendida).\n";
     std::cout << "[INFO] Mandos conectados: " << SDL_NumJoysticks() << '\n';
 
     m_isRunning = true;
     return true;
+}
+
+void Engine::detectSystemLanguage() {
+    m_language = Language::English;
+    SDL_Locale* locales = SDL_GetPreferredLocales();
+    if (locales) {
+        if (locales[0].language) {
+            if ((locales[0].language[0] == 'e' || locales[0].language[0] == 'E') &&
+                (locales[0].language[1] == 's' || locales[0].language[1] == 'S')) {
+                m_language = Language::Spanish;
+            } else {
+                m_language = Language::English;
+            }
+        }
+        SDL_free(locales);
+    }
+}
+
+void Engine::startLoadingScreen(GameState targetState, float duration) {
+    Core::AudioManager::getInstance().stopAllSfx();
+    Core::AudioManager::getInstance().stopMusic();
+    m_loadingTargetState = targetState;
+    m_loadingDuration = duration;
+    m_loadingTimer = 0.0f;
+    m_gameState = GameState::Loading;
 }
 
 void Engine::resetGame() {
@@ -297,9 +343,8 @@ void Engine::selectArmoryUpgrade(int option) {
     }
 
     m_isArmoryOpen = false;
-    m_gameState = GameState::Playing;
     m_levelManager.advanceLevel();
-    Core::AudioManager::getInstance().startMusic();
+    startLoadingScreen(GameState::Playing, 1.35f);
 }
 
 void Engine::buyArmoryUpgrade(int upgradeIndex) {
@@ -490,6 +535,8 @@ void Engine::saveProgress() {
     header.bestSurvivalSeconds = m_bestSurvivalSeconds;
     header.totalUpgradesPurchased = m_totalUpgradesPurchased;
     header.campaignCompleted = (m_campaignCompleted || m_isCampaignWon) ? 1 : 0;
+    header.languageUserSet = m_languageUserSet ? 1 : 0;
+    header.language = (m_language == Language::English) ? 1 : 0;
     SDL_RWwrite(file, &header, sizeof(SaveHeader), 1);
     SDL_RWclose(file);
     std::cout << "[SISTEMA] Progreso guardado en " << savePath << ": Nivel Máx = " << m_maxUnlockedLevel
@@ -550,6 +597,10 @@ void Engine::loadProgress() {
             m_bestSurvivalSeconds = header.bestSurvivalSeconds;
             m_totalUpgradesPurchased = header.totalUpgradesPurchased;
             m_campaignCompleted = (header.campaignCompleted != 0);
+            if (header.languageUserSet != 0) {
+                m_languageUserSet = true;
+                m_language = (header.language == 1) ? Language::English : Language::Spanish;
+            }
         }
 
         std::cout << "[SISTEMA] Progreso cargado: Nivel Máx = " << m_maxUnlockedLevel
@@ -576,13 +627,48 @@ void Engine::processEvents() {
             return;
         }
 
+        if (event.type == SDL_APP_WILLENTERBACKGROUND || event.type == SDL_APP_TERMINATING) {
+            Core::AudioManager::getInstance().stopAllSfx();
+            Core::AudioManager::getInstance().pauseMusic();
+            continue;
+        }
+        if (event.type == SDL_APP_DIDENTERFOREGROUND) {
+            if (m_gameState == GameState::Playing) {
+                Core::AudioManager::getInstance().resumeMusic();
+            }
+            continue;
+        }
+
+        // Normalizar coordenadas de ratón al espacio lógico 1920x1080 extendido
+        if (event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP) {
+            int winW = LOGICAL_WIDTH;
+            int winH = LOGICAL_HEIGHT;
+            SDL_GetWindowSize(m_window, &winW, &winH);
+            if (winW > 0 && winH > 0) {
+                event.button.x = static_cast<Sint32>(static_cast<float>(event.button.x) * static_cast<float>(LOGICAL_WIDTH) / static_cast<float>(winW));
+                event.button.y = static_cast<Sint32>(static_cast<float>(event.button.y) * static_cast<float>(LOGICAL_HEIGHT) / static_cast<float>(winH));
+            }
+        } else if (event.type == SDL_MOUSEMOTION) {
+            int winW = LOGICAL_WIDTH;
+            int winH = LOGICAL_HEIGHT;
+            SDL_GetWindowSize(m_window, &winW, &winH);
+            if (winW > 0 && winH > 0) {
+                event.motion.x = static_cast<Sint32>(static_cast<float>(event.motion.x) * static_cast<float>(LOGICAL_WIDTH) / static_cast<float>(winW));
+                event.motion.y = static_cast<Sint32>(static_cast<float>(event.motion.y) * static_cast<float>(LOGICAL_HEIGHT) / static_cast<float>(winH));
+            }
+        }
+
         // =====================================================================
         // ESTADO 1: CARGA (Loading)
         // =====================================================================
         if (m_gameState == GameState::Loading) {
-            if (event.type == SDL_KEYDOWN || event.type == SDL_MOUSEBUTTONDOWN ||
-                event.type == SDL_FINGERDOWN || event.type == SDL_CONTROLLERBUTTONDOWN) {
-                m_gameState = GameState::MainMenu;
+            if (m_loadingTimer >= 0.45f &&
+                (event.type == SDL_KEYDOWN || event.type == SDL_MOUSEBUTTONDOWN ||
+                 event.type == SDL_FINGERDOWN || event.type == SDL_CONTROLLERBUTTONDOWN)) {
+                m_gameState = m_loadingTargetState;
+                if (m_gameState == GameState::Playing) {
+                    Core::AudioManager::getInstance().startMusic();
+                }
             }
             continue;
         }
@@ -601,16 +687,14 @@ void Engine::processEvents() {
                     case 0:
                         m_isSurvivalMode = false;
                         jumpToLevel(m_maxUnlockedLevel);
-                        m_gameState = GameState::Playing;
-                        Core::AudioManager::getInstance().startMusic();
+                        startLoadingScreen(GameState::Playing, 1.35f);
                         break;
                     case 1:
                         m_isSurvivalMode = true;
                         m_survivalTimer = 0.0f;
                         m_survivalBossTimer = 60.0f;
                         resetGame();
-                        m_gameState = GameState::Playing;
-                        Core::AudioManager::getInstance().startMusic();
+                        startLoadingScreen(GameState::Playing, 1.35f);
                         break;
                     case 2:
                         m_levelSelectSelectedIndex = m_maxUnlockedLevel - 1;
@@ -643,16 +727,14 @@ void Engine::processEvents() {
                     case 0:
                         m_isSurvivalMode = false;
                         jumpToLevel(m_maxUnlockedLevel);
-                        m_gameState = GameState::Playing;
-                        Core::AudioManager::getInstance().startMusic();
+                        startLoadingScreen(GameState::Playing, 1.35f);
                         break;
                     case 1:
                         m_isSurvivalMode = true;
                         m_survivalTimer = 0.0f;
                         m_survivalBossTimer = 60.0f;
                         resetGame();
-                        m_gameState = GameState::Playing;
-                        Core::AudioManager::getInstance().startMusic();
+                        startLoadingScreen(GameState::Playing, 1.35f);
                         break;
                     case 2:
                         m_levelSelectSelectedIndex = m_maxUnlockedLevel - 1;
@@ -699,16 +781,14 @@ void Engine::processEvents() {
                         case 0:
                             m_isSurvivalMode = false;
                             jumpToLevel(m_maxUnlockedLevel);
-                            m_gameState = GameState::Playing;
-                            Core::AudioManager::getInstance().startMusic();
+                            startLoadingScreen(GameState::Playing, 1.35f);
                             break;
                         case 1:
                             m_isSurvivalMode = true;
                             m_survivalTimer = 0.0f;
                             m_survivalBossTimer = 60.0f;
                             resetGame();
-                            m_gameState = GameState::Playing;
-                            Core::AudioManager::getInstance().startMusic();
+                            startLoadingScreen(GameState::Playing, 1.35f);
                             break;
                         case 2:
                             m_levelSelectSelectedIndex = m_maxUnlockedLevel - 1;
@@ -806,9 +886,9 @@ void Engine::processEvents() {
                     } else {
                         const int targetLvl = m_levelSelectSelectedIndex + 1;
                         if (targetLvl <= m_maxUnlockedLevel) {
+                            m_isSurvivalMode = false;
                             jumpToLevel(targetLvl);
-                            m_gameState = GameState::Playing;
-                            Core::AudioManager::getInstance().startMusic();
+                            startLoadingScreen(GameState::Playing, 1.35f);
                         }
                     }
                 }
@@ -842,9 +922,9 @@ void Engine::processEvents() {
                     } else {
                         const int targetLvl = m_levelSelectSelectedIndex + 1;
                         if (targetLvl <= m_maxUnlockedLevel) {
+                            m_isSurvivalMode = false;
                             jumpToLevel(targetLvl);
-                            m_gameState = GameState::Playing;
-                            Core::AudioManager::getInstance().startMusic();
+                            startLoadingScreen(GameState::Playing, 1.35f);
                         }
                     }
                 }
@@ -871,9 +951,9 @@ void Engine::processEvents() {
                     if (clickX >= bx && clickX <= bx + btnW && clickY >= by && clickY <= by + btnH) {
                         m_levelSelectSelectedIndex = lvl - 1;
                         if (lvl <= m_maxUnlockedLevel) {
+                            m_isSurvivalMode = false;
                             jumpToLevel(lvl);
-                            m_gameState = GameState::Playing;
-                            Core::AudioManager::getInstance().startMusic();
+                            startLoadingScreen(GameState::Playing, 1.35f);
                         }
                         break;
                     }
@@ -908,8 +988,7 @@ void Engine::processEvents() {
                         break;
                     case 1:
                         jumpToLevel(m_levelManager.getCurrentLevel());
-                        m_gameState = GameState::Playing;
-                        Core::AudioManager::getInstance().startMusic();
+                        startLoadingScreen(GameState::Playing, 1.15f);
                         break;
                     case 2:
                         m_previousState = GameState::Paused;
@@ -918,6 +997,7 @@ void Engine::processEvents() {
                         break;
                     case 3:
                         m_gameState = GameState::MainMenu;
+                        Core::AudioManager::getInstance().stopAllSfx();
                         Core::AudioManager::getInstance().stopMusic();
                         break;
                     }
@@ -939,8 +1019,7 @@ void Engine::processEvents() {
                         break;
                     case 1:
                         jumpToLevel(m_levelManager.getCurrentLevel());
-                        m_gameState = GameState::Playing;
-                        Core::AudioManager::getInstance().startMusic();
+                        startLoadingScreen(GameState::Playing, 1.15f);
                         break;
                     case 2:
                         m_previousState = GameState::Paused;
@@ -949,6 +1028,7 @@ void Engine::processEvents() {
                         break;
                     case 3:
                         m_gameState = GameState::MainMenu;
+                        Core::AudioManager::getInstance().stopAllSfx();
                         Core::AudioManager::getInstance().stopMusic();
                         break;
                     }
@@ -967,23 +1047,23 @@ void Engine::processEvents() {
             }
 
             if (clickX >= 720.0f && clickX <= 1200.0f) {
-                if (clickY >= 280.0f && clickY <= 344.0f) {
+                if (clickY >= 270.0f && clickY <= 330.0f) {
                     m_pauseSelectedIndex = 0;
                     m_gameState = GameState::Playing;
                     Core::AudioManager::getInstance().resumeMusic();
-                } else if (clickY >= 365.0f && clickY <= 429.0f) {
+                } else if (clickY >= 345.0f && clickY <= 405.0f) {
                     m_pauseSelectedIndex = 1;
                     jumpToLevel(m_levelManager.getCurrentLevel());
-                    m_gameState = GameState::Playing;
-                    Core::AudioManager::getInstance().startMusic();
-                } else if (clickY >= 450.0f && clickY <= 514.0f) {
+                    startLoadingScreen(GameState::Playing, 1.15f);
+                } else if (clickY >= 420.0f && clickY <= 480.0f) {
                     m_pauseSelectedIndex = 2;
                     m_previousState = GameState::Paused;
                     m_settingsSelectedIndex = 0;
                     m_gameState = GameState::Settings;
-                } else if (clickY >= 535.0f && clickY <= 599.0f) {
+                } else if (clickY >= 495.0f && clickY <= 555.0f) {
                     m_pauseSelectedIndex = 3;
                     m_gameState = GameState::MainMenu;
+                    Core::AudioManager::getInstance().stopAllSfx();
                     Core::AudioManager::getInstance().stopMusic();
                 }
             }
@@ -1011,6 +1091,9 @@ void Engine::processEvents() {
                 } else if (m_settingsSelectedIndex == 3) {
                     m_touchOpacityLevel = std::clamp(m_touchOpacityLevel + delta, 0, 2);
                     m_inputManager.setTouchOpacityLevel(m_touchOpacityLevel);
+                } else if (m_settingsSelectedIndex == 4) {
+                    m_language = (m_language == Language::Spanish) ? Language::English : Language::Spanish;
+                    m_languageUserSet = true;
                 }
             };
 
@@ -1020,17 +1103,17 @@ void Engine::processEvents() {
                     m_gameState = m_previousState;
                     continue;
                 } else if (event.key.keysym.sym == SDLK_UP || event.key.keysym.sym == SDLK_w) {
-                    m_settingsSelectedIndex = (m_settingsSelectedIndex + 4) % 5;
+                    m_settingsSelectedIndex = (m_settingsSelectedIndex + 5) % 6;
                 } else if (event.key.keysym.sym == SDLK_DOWN || event.key.keysym.sym == SDLK_s) {
-                    m_settingsSelectedIndex = (m_settingsSelectedIndex + 1) % 5;
+                    m_settingsSelectedIndex = (m_settingsSelectedIndex + 1) % 6;
                 } else if (event.key.keysym.sym == SDLK_LEFT || event.key.keysym.sym == SDLK_a) {
                     applySettingsChange(-1);
                 } else if (event.key.keysym.sym == SDLK_RIGHT || event.key.keysym.sym == SDLK_d) {
                     applySettingsChange(1);
                 } else if (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_SPACE) {
-                    if (m_settingsSelectedIndex == 2) {
+                    if (m_settingsSelectedIndex == 2 || m_settingsSelectedIndex == 4) {
                         applySettingsChange(1);
-                    } else if (m_settingsSelectedIndex == 4) {
+                    } else if (m_settingsSelectedIndex == 5) {
                         saveProgress();
                         m_gameState = m_previousState;
                     }
@@ -1041,24 +1124,24 @@ void Engine::processEvents() {
                     m_gameState = m_previousState;
                     continue;
                 } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) {
-                    m_settingsSelectedIndex = (m_settingsSelectedIndex + 4) % 5;
+                    m_settingsSelectedIndex = (m_settingsSelectedIndex + 5) % 6;
                 } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) {
-                    m_settingsSelectedIndex = (m_settingsSelectedIndex + 1) % 5;
+                    m_settingsSelectedIndex = (m_settingsSelectedIndex + 1) % 6;
                 } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
                     applySettingsChange(-1);
                 } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
                     applySettingsChange(1);
                 } else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
-                    if (m_settingsSelectedIndex == 2) {
+                    if (m_settingsSelectedIndex == 2 || m_settingsSelectedIndex == 4) {
                         applySettingsChange(1);
-                    } else if (m_settingsSelectedIndex == 4) {
+                    } else if (m_settingsSelectedIndex == 5) {
                         saveProgress();
                         m_gameState = m_previousState;
                     }
                 }
             }
 
-            // Mouse y Touch en Ajustes
+            // Mouse y Touch en Ajustes (6 filas: 0=SFX, 1=Music, 2=Shake, 3=Opacity, 4=Language, 5=Back)
             float clickX = -1.0f;
             float clickY = -1.0f;
             if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
@@ -1070,27 +1153,37 @@ void Engine::processEvents() {
             }
 
             if (clickX >= 0.0f) {
-                if (clickY >= 226.0f && clickY <= 270.0f) {
-                    if (clickX >= 860.0f && clickX <= 904.0f) {
+                if (clickY >= 205.0f && clickY <= 258.0f) {
+                    if (clickX >= 860.0f && clickX <= 908.0f) {
                         m_settingsSelectedIndex = 0;
                         m_sfxVolume = std::max(0, m_sfxVolume - 10);
                         Core::AudioManager::getInstance().setSfxVolume(m_sfxVolume);
-                    } else if (clickX >= 1250.0f && clickX <= 1294.0f) {
+                    } else if (clickX >= 1244.0f && clickX <= 1294.0f) {
                         m_settingsSelectedIndex = 0;
                         m_sfxVolume = std::min(100, m_sfxVolume + 10);
                         Core::AudioManager::getInstance().setSfxVolume(m_sfxVolume);
+                    } else if (clickX >= 914.0f && clickX <= 1238.0f) {
+                        m_settingsSelectedIndex = 0;
+                        const int barIdx = std::clamp(static_cast<int>((clickX - 916.0f) / 32.0f) + 1, 1, 10);
+                        m_sfxVolume = barIdx * 10;
+                        Core::AudioManager::getInstance().setSfxVolume(m_sfxVolume);
                     }
-                } else if (clickY >= 316.0f && clickY <= 360.0f) {
-                    if (clickX >= 860.0f && clickX <= 904.0f) {
+                } else if (clickY >= 285.0f && clickY <= 338.0f) {
+                    if (clickX >= 860.0f && clickX <= 908.0f) {
                         m_settingsSelectedIndex = 1;
                         m_musicVolume = std::max(0, m_musicVolume - 10);
                         Core::AudioManager::getInstance().setMusicVolume(m_musicVolume);
-                    } else if (clickX >= 1250.0f && clickX <= 1294.0f) {
+                    } else if (clickX >= 1244.0f && clickX <= 1294.0f) {
                         m_settingsSelectedIndex = 1;
                         m_musicVolume = std::min(100, m_musicVolume + 10);
                         Core::AudioManager::getInstance().setMusicVolume(m_musicVolume);
+                    } else if (clickX >= 914.0f && clickX <= 1238.0f) {
+                        m_settingsSelectedIndex = 1;
+                        const int barIdx = std::clamp(static_cast<int>((clickX - 916.0f) / 32.0f) + 1, 1, 10);
+                        m_musicVolume = barIdx * 10;
+                        Core::AudioManager::getInstance().setMusicVolume(m_musicVolume);
                     }
-                } else if (clickY >= 404.0f && clickY <= 452.0f && clickX >= 920.0f && clickX <= 1200.0f) {
+                } else if (clickY >= 365.0f && clickY <= 418.0f && clickX >= 916.0f && clickX <= 1290.0f) {
                     m_settingsSelectedIndex = 2;
                     m_screenShakeEnabled = !m_screenShakeEnabled;
                     if (!m_screenShakeEnabled) {
@@ -1098,22 +1191,32 @@ void Engine::processEvents() {
                         m_shakeOffsetX = 0.0f;
                         m_shakeOffsetY = 0.0f;
                     }
-                } else if (clickY >= 494.0f && clickY <= 542.0f) {
-                    if (clickX >= 910.0f && clickX <= 1000.0f) {
+                } else if (clickY >= 445.0f && clickY <= 498.0f) {
+                    if (clickX >= 916.0f && clickX <= 1034.0f) {
                         m_settingsSelectedIndex = 3;
                         m_touchOpacityLevel = 0;
                         m_inputManager.setTouchOpacityLevel(0);
-                    } else if (clickX >= 1010.0f && clickX <= 1100.0f) {
+                    } else if (clickX >= 1044.0f && clickX <= 1162.0f) {
                         m_settingsSelectedIndex = 3;
                         m_touchOpacityLevel = 1;
                         m_inputManager.setTouchOpacityLevel(1);
-                    } else if (clickX >= 1110.0f && clickX <= 1200.0f) {
+                    } else if (clickX >= 1172.0f && clickX <= 1290.0f) {
                         m_settingsSelectedIndex = 3;
                         m_touchOpacityLevel = 2;
                         m_inputManager.setTouchOpacityLevel(2);
                     }
-                } else if (clickY >= 620.0f && clickY <= 680.0f && clickX >= 740.0f && clickX <= 1180.0f) {
-                    m_settingsSelectedIndex = 4;
+                } else if (clickY >= 525.0f && clickY <= 578.0f) {
+                    if (clickX >= 916.0f && clickX <= 1095.0f) {
+                        m_settingsSelectedIndex = 4;
+                        m_language = Language::Spanish;
+                        m_languageUserSet = true;
+                    } else if (clickX >= 1111.0f && clickX <= 1290.0f) {
+                        m_settingsSelectedIndex = 4;
+                        m_language = Language::English;
+                        m_languageUserSet = true;
+                    }
+                } else if (clickY >= 630.0f && clickY <= 700.0f && clickX >= 740.0f && clickX <= 1180.0f) {
+                    m_settingsSelectedIndex = 5;
                     saveProgress();
                     m_gameState = m_previousState;
                 }
@@ -1129,6 +1232,7 @@ void Engine::processEvents() {
                 if (event.key.keysym.sym == SDLK_ESCAPE || event.key.keysym.sym == SDLK_p) {
                     m_pauseSelectedIndex = 0;
                     m_gameState = GameState::Paused;
+                    Core::AudioManager::getInstance().stopAllSfx();
                     Core::AudioManager::getInstance().pauseMusic();
                     continue;
                 }
@@ -1154,6 +1258,7 @@ void Engine::processEvents() {
                 if (event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
                     m_pauseSelectedIndex = 0;
                     m_gameState = GameState::Paused;
+                    Core::AudioManager::getInstance().stopAllSfx();
                     Core::AudioManager::getInstance().pauseMusic();
                     continue;
                 }
@@ -1173,6 +1278,7 @@ void Engine::processEvents() {
             if (clickX >= 1820.0f && clickX <= 1890.0f && clickY >= 20.0f && clickY <= 90.0f) {
                 m_pauseSelectedIndex = 0;
                 m_gameState = GameState::Paused;
+                Core::AudioManager::getInstance().stopAllSfx();
                 Core::AudioManager::getInstance().pauseMusic();
                 continue;
             }
@@ -1253,15 +1359,14 @@ void Engine::processEvents() {
                     }
                 } else if (sym == SDLK_RETURN || sym == SDLK_SPACE || sym == SDLK_KP_ENTER) {
                     if (m_armorySelectedIndex == 15) {
-                        // Desplegar al siguiente nivel
+                        // Desplegar al siguiente nivel con pantalla de carga
                         m_levelEnemiesKilled = 0;
                         m_levelBombsIntercepted = 0;
                         m_levelScoreEarned = 0;
                         m_levelIntegrityBonus = 0;
                         m_isArmoryOpen = false;
-                        m_gameState = GameState::Playing;
                         m_levelManager.advanceLevel();
-                        Core::AudioManager::getInstance().startMusic();
+                        startLoadingScreen(GameState::Playing, 1.35f);
                         return;
                     } else if (m_armorySelectedIndex >= 0 && m_armorySelectedIndex < 15) {
                         buyArmoryUpgrade(m_armorySelectedIndex);
@@ -1288,9 +1393,8 @@ void Engine::processEvents() {
                         m_levelScoreEarned = 0;
                         m_levelIntegrityBonus = 0;
                         m_isArmoryOpen = false;
-                        m_gameState = GameState::Playing;
                         m_levelManager.advanceLevel();
-                        Core::AudioManager::getInstance().startMusic();
+                        startLoadingScreen(GameState::Playing, 1.35f);
                         return;
                     } else if (m_armorySelectedIndex >= 0 && m_armorySelectedIndex < 15) {
                         buyArmoryUpgrade(m_armorySelectedIndex);
@@ -1307,9 +1411,8 @@ void Engine::processEvents() {
                     m_levelScoreEarned = 0;
                     m_levelIntegrityBonus = 0;
                     m_isArmoryOpen = false;
-                    m_gameState = GameState::Playing;
                     m_levelManager.advanceLevel();
-                    Core::AudioManager::getInstance().startMusic();
+                    startLoadingScreen(GameState::Playing, 1.35f);
                     return;
                 }
 
@@ -1335,9 +1438,8 @@ void Engine::processEvents() {
                     m_levelScoreEarned = 0;
                     m_levelIntegrityBonus = 0;
                     m_isArmoryOpen = false;
-                    m_gameState = GameState::Playing;
                     m_levelManager.advanceLevel();
-                    Core::AudioManager::getInstance().startMusic();
+                    startLoadingScreen(GameState::Playing, 1.35f);
                     return;
                 }
 
@@ -1363,6 +1465,7 @@ void Engine::processEvents() {
                 if (mx >= 760.0f && mx <= 1160.0f && my >= 640.0f && my <= 720.0f) {
                     resetGame();
                     m_gameState = GameState::MainMenu;
+                    Core::AudioManager::getInstance().stopAllSfx();
                     Core::AudioManager::getInstance().stopMusic();
                     return;
                 }
@@ -1372,6 +1475,7 @@ void Engine::processEvents() {
                 if (fx >= 760.0f && fx <= 1160.0f && fy >= 640.0f && fy <= 720.0f) {
                     resetGame();
                     m_gameState = GameState::MainMenu;
+                    Core::AudioManager::getInstance().stopAllSfx();
                     Core::AudioManager::getInstance().stopMusic();
                     return;
                 }
@@ -1379,6 +1483,7 @@ void Engine::processEvents() {
                 if (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_r || event.key.keysym.sym == SDLK_SPACE) {
                     resetGame();
                     m_gameState = GameState::MainMenu;
+                    Core::AudioManager::getInstance().stopAllSfx();
                     Core::AudioManager::getInstance().stopMusic();
                     return;
                 }
@@ -1386,6 +1491,7 @@ void Engine::processEvents() {
                 if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A || event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
                     resetGame();
                     m_gameState = GameState::MainMenu;
+                    Core::AudioManager::getInstance().stopAllSfx();
                     Core::AudioManager::getInstance().stopMusic();
                     return;
                 }
@@ -1399,8 +1505,7 @@ void Engine::processEvents() {
                 const float my = static_cast<float>(event.button.y);
                 if (mx >= 760.0f && mx <= 1160.0f && my >= 520.0f && my <= 620.0f) {
                     resetGame();
-                    m_gameState = GameState::Playing;
-                    Core::AudioManager::getInstance().startMusic();
+                    startLoadingScreen(GameState::Playing, 1.25f);
                     return;
                 }
             } else if (event.type == SDL_FINGERDOWN) {
@@ -1408,22 +1513,19 @@ void Engine::processEvents() {
                 const float fy = event.tfinger.y * 1080.0f;
                 if (fx >= 760.0f && fx <= 1160.0f && fy >= 520.0f && fy <= 620.0f) {
                     resetGame();
-                    m_gameState = GameState::Playing;
-                    Core::AudioManager::getInstance().startMusic();
+                    startLoadingScreen(GameState::Playing, 1.25f);
                     return;
                 }
             } else if (event.type == SDL_KEYDOWN) {
                 if (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_r || event.key.keysym.sym == SDLK_SPACE) {
                     resetGame();
-                    m_gameState = GameState::Playing;
-                    Core::AudioManager::getInstance().startMusic();
+                    startLoadingScreen(GameState::Playing, 1.25f);
                     return;
                 }
             } else if (event.type == SDL_CONTROLLERBUTTONDOWN) {
                 if (event.cbutton.button == SDL_CONTROLLER_BUTTON_A || event.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
                     resetGame();
-                    m_gameState = GameState::Playing;
-                    Core::AudioManager::getInstance().startMusic();
+                    startLoadingScreen(GameState::Playing, 1.25f);
                     return;
                 }
             }
@@ -1491,8 +1593,11 @@ void Engine::update(float dt) {
 
     if (m_gameState == GameState::Loading) {
         m_loadingTimer += dt;
-        if (m_loadingTimer >= 1.8f) {
-            m_gameState = GameState::MainMenu;
+        if (m_loadingTimer >= m_loadingDuration) {
+            m_gameState = m_loadingTargetState;
+            if (m_gameState == GameState::Playing) {
+                Core::AudioManager::getInstance().startMusic();
+            }
         }
         return;
     }
@@ -2502,14 +2607,14 @@ void Engine::renderHUD() {
         const int sMin = survSecs / 60;
         const int sSec = survSecs % 60;
         char survBuf[32];
-        snprintf(survBuf, sizeof(survBuf), "SUPERVIVENCIA: %02d:%02d", sMin, sSec);
+        snprintf(survBuf, sizeof(survBuf), "%s: %02d:%02d", tr("SUPERVIVENCIA", "SURVIVAL"), sMin, sSec);
         renderArcadeText(m_renderer, survBuf, 960.0f, 85.0f, 2.4f, SDL_Color{255, 225, 60, 255}, true);
 
         const int bestSecs = static_cast<int>(m_bestSurvivalSeconds);
         const int bMin = bestSecs / 60;
         const int bSec = bestSecs % 60;
         char bestBuf[32];
-        snprintf(bestBuf, sizeof(bestBuf), "RECORD: %02d:%02d", bMin, bSec);
+        snprintf(bestBuf, sizeof(bestBuf), "%s: %02d:%02d", tr("RECORD", "BEST"), bMin, bSec);
         renderArcadeText(m_renderer, bestBuf, 960.0f, 108.0f, 1.6f, SDL_Color{0, 225, 245, 220}, true);
     } else {
         m_levelManager.renderMissionBar(m_renderer);
@@ -2638,7 +2743,7 @@ void Engine::renderLevelSummaryScreen() {
     SDL_RenderFillRectF(m_renderer, &headerBg);
 
     char titleBuf[64];
-    std::snprintf(titleBuf, sizeof(titleBuf), "SECTOR %d CLEARED - MISSION REPORT", m_levelManager.getCurrentLevel());
+    std::snprintf(titleBuf, sizeof(titleBuf), tr("SECTOR %d COMPLETADO - REPORTE DE MISION", "SECTOR %d CLEARED - MISSION REPORT"), m_levelManager.getCurrentLevel());
     renderArcadeText(m_renderer, titleBuf, 960.0f, 185.0f, 3.0f, SDL_Color{0, 255, 160, 255}, true);
 
     const auto& pal = m_levelManager.getCurrentPalette();
@@ -2657,19 +2762,19 @@ void Engine::renderLevelSummaryScreen() {
     };
 
     StatRow stats[4];
-    stats[0].label = "ENEMIES DESTROYED";
+    stats[0].label = tr("ENEMIGOS DESTRUIDOS", "ENEMIES DESTROYED");
     std::snprintf(stats[0].val, sizeof(stats[0].val), "%d", m_levelEnemiesKilled);
     stats[0].valColor = SDL_Color{0, 230, 255, 255};
 
-    stats[1].label = "PROJECTILES INTERCEPTED";
+    stats[1].label = tr("PROYECTILES INTERCEPTADOS", "PROJECTILES INTERCEPTED");
     std::snprintf(stats[1].val, sizeof(stats[1].val), "%d", m_levelBombsIntercepted);
     stats[1].valColor = SDL_Color{0, 230, 255, 255};
 
-    stats[2].label = "TANK INTEGRITY BONUS";
+    stats[2].label = tr("BONO INTEGRIDAD DEL TANQUE", "TANK INTEGRITY BONUS");
     std::snprintf(stats[2].val, sizeof(stats[2].val), "+%d PTS", m_levelIntegrityBonus);
     stats[2].valColor = SDL_Color{60, 255, 120, 255};
 
-    stats[3].label = "MISSION SCORE EARNED";
+    stats[3].label = tr("PUNTUACION DE MISION", "MISSION SCORE EARNED");
     std::snprintf(stats[3].val, sizeof(stats[3].val), "+%llu PTS", static_cast<unsigned long long>(m_levelScoreEarned));
     stats[3].valColor = SDL_Color{255, 220, 50, 255};
 
@@ -2702,7 +2807,7 @@ void Engine::renderLevelSummaryScreen() {
     SDL_SetRenderDrawColor(m_renderer, 255, 215, 30, 255);
     SDL_RenderFillRectF(m_renderer, &credBorder);
 
-    renderArcadeText(m_renderer, "TOTAL AVAILABLE CREDITS", 485.0f, 650.0f, 2.5f, SDL_Color{255, 220, 40, 255}, false);
+    renderArcadeText(m_renderer, tr("CREDITOS DISPONIBLES", "TOTAL AVAILABLE CREDITS"), 485.0f, 650.0f, 2.5f, SDL_Color{255, 220, 40, 255}, false);
 
     char totalCredBuf[32];
     std::snprintf(totalCredBuf, sizeof(totalCredBuf), "%d PTS", m_spendablePoints);
@@ -2723,8 +2828,8 @@ void Engine::renderLevelSummaryScreen() {
     SDL_RenderFillRectF(m_renderer, &procBtnBorderL);
     SDL_RenderFillRectF(m_renderer, &procBtnBorderR);
 
-    renderArcadeText(m_renderer, "[ PROCEED TO ARMORY >> ]", 960.0f, 758.0f, 2.7f, SDL_Color{255, 255, 255, 255}, true);
-    renderArcadeText(m_renderer, "PRESS ENTER / GAMEPAD A OR CLICK TO CONTINUE", 960.0f, 825.0f, 1.8f, SDL_Color{140, 165, 185, 255}, true);
+    renderArcadeText(m_renderer, tr("[ IR A LA ARMERIA >> ]", "[ PROCEED TO ARMORY >> ]"), 960.0f, 758.0f, 2.7f, SDL_Color{255, 255, 255, 255}, true);
+    renderArcadeText(m_renderer, tr("PULSA ENTER / BOTON A O TOCA PARA CONTINUAR", "PRESS ENTER / GAMEPAD A OR CLICK TO CONTINUE"), 960.0f, 825.0f, 1.8f, SDL_Color{140, 165, 185, 255}, true);
 }
 
 void Engine::renderArmoryScreen() {
@@ -2746,10 +2851,10 @@ void Engine::renderArmoryScreen() {
     SDL_RenderFillRectF(m_renderer, &hBorderT);
     SDL_RenderFillRectF(m_renderer, &hBorderB);
 
-    renderArcadeText(m_renderer, "TACTICAL ARMORY - 15 UPGRADE MATRIX", 960.0f, 44.0f, 3.2f, SDL_Color{0, 255, 160, 255}, true);
+    renderArcadeText(m_renderer, tr("ARMERIA TACTICA - MATRIZ DE 15 MEJORAS", "TACTICAL ARMORY - 15 UPGRADE MATRIX"), 960.0f, 44.0f, 3.2f, SDL_Color{0, 255, 160, 255}, true);
 
     char credBuf[64];
-    std::snprintf(credBuf, sizeof(credBuf), "TOTAL AVAILABLE CREDITS: %d PTS", m_spendablePoints);
+    std::snprintf(credBuf, sizeof(credBuf), tr("CREDITOS DISPONIBLES: %d PTS", "TOTAL AVAILABLE CREDITS: %d PTS"), m_spendablePoints);
     renderArcadeText(m_renderer, credBuf, 960.0f, 88.0f, 2.5f, SDL_Color{255, 220, 40, 255}, true);
 
     // 3. Definición estática de las 15 Mejoras
@@ -2929,11 +3034,11 @@ void Engine::renderArmoryScreen() {
         if (st == Status::Bought) {
             SDL_SetRenderDrawColor(m_renderer, 0, 130, 65, 255);
             SDL_RenderFillRectF(m_renderer, &badgeRect);
-            renderArcadeText(m_renderer, "[ COMPRADO ]", badgeX + badgeW * 0.5f, badgeY + 10.0f, 1.7f, SDL_Color{220, 255, 230, 255}, true);
+            renderArcadeText(m_renderer, tr("[ COMPRADO ]", "[ OWNED ]"), badgeX + badgeW * 0.5f, badgeY + 10.0f, 1.7f, SDL_Color{220, 255, 230, 255}, true);
         } else if (st == Status::Locked) {
             SDL_SetRenderDrawColor(m_renderer, 35, 42, 50, 255);
             SDL_RenderFillRectF(m_renderer, &badgeRect);
-            renderArcadeText(m_renderer, "[ BLOQUEADO ]", badgeX + badgeW * 0.5f, badgeY + 10.0f, 1.7f, SDL_Color{120, 130, 140, 255}, true);
+            renderArcadeText(m_renderer, tr("[ BLOQUEADO ]", "[ LOCKED ]"), badgeX + badgeW * 0.5f, badgeY + 10.0f, 1.7f, SDL_Color{120, 130, 140, 255}, true);
         } else {
             const bool canAfford = (m_spendablePoints >= it.cost);
             if (canAfford) {
@@ -2974,18 +3079,20 @@ void Engine::renderArmoryScreen() {
     SDL_RenderFillRectF(m_renderer, &depBorderL);
     SDL_RenderFillRectF(m_renderer, &depBorderR);
 
-    renderArcadeText(m_renderer, "[ DEPLOY TO NEXT MISSION >> ]", 960.0f, 887.0f, 2.8f,
+    renderArcadeText(m_renderer, tr("[ DESPLEGAR A SIGUIENTE MISION >> ]", "[ DEPLOY TO NEXT MISSION >> ]"), 960.0f, 887.0f, 2.8f,
                      isDeploySelected ? SDL_Color{255, 255, 255, 255} : SDL_Color{230, 250, 235, 255}, true);
 
     // Barra de Estado Actual del Tanque
     char statusBuf[128];
     std::snprintf(statusBuf, sizeof(statusBuf),
-                  "TANK HP: %d/%d  |  AMMO: T%d  |  CANNONS: T%d  |  CHASSIS: T%d  |  NUKES: %d  |  LIVES: %d",
+                  tr("HP TANQUE: %d/%d  |  MUNI: T%d  |  CANON: T%d  |  CHASIS: T%d  |  NUKES: %d  |  VIDAS: %d",
+                     "TANK HP: %d/%d  |  AMMO: T%d  |  CANNONS: T%d  |  CHASSIS: T%d  |  NUKES: %d  |  LIVES: %d"),
                   static_cast<int>(m_tank.getShield()), static_cast<int>(m_tank.getMaxShield()),
                   m_tank.getAmmoTier(), m_tank.getCannonTier(), m_tank.getChassisTier(),
                   m_nukesAvailable, m_lives);
     renderArcadeText(m_renderer, statusBuf, 960.0f, 955.0f, 1.8f, SDL_Color{160, 190, 220, 255}, true);
-    renderArcadeText(m_renderer, "ARROWS / WASD: NAVIGATE  |  ENTER / GAMEPAD A: BUY / DEPLOY  |  CLICK CARD TO BUY",
+    renderArcadeText(m_renderer, tr("FLECHAS / WASD: NAVEGAR  |  ENTER / BOTON A: COMPRAR / DESPLEGAR  |  TOCA TARJETA PARA COMPRAR",
+                                    "ARROWS / WASD: NAVIGATE  |  ENTER / GAMEPAD A: BUY / DEPLOY  |  CLICK CARD TO BUY"),
                      960.0f, 985.0f, 1.6f, SDL_Color{120, 140, 160, 255}, true);
 }
 
@@ -3019,19 +3126,19 @@ void Engine::renderGameOverScreen() {
     SDL_RenderFillRectF(m_renderer, &bannerStripe);
 
     if (m_isSurvivalMode) {
-        renderArcadeText(m_renderer, "MODO SUPERVIVENCIA FINALIZADO", 960.0f, 258.0f, 2.6f, SDL_Color{255, 255, 255, 255}, true);
+        renderArcadeText(m_renderer, tr("MODO SUPERVIVENCIA FINALIZADO", "SURVIVAL MODE ENDED"), 960.0f, 258.0f, 2.6f, SDL_Color{255, 255, 255, 255}, true);
 
         const int sSecs = static_cast<int>(m_survivalTimer);
         char sBuf[64];
-        std::snprintf(sBuf, sizeof(sBuf), "TIEMPO RESISTIDO: %02d:%02d", sSecs / 60, sSecs % 60);
+        std::snprintf(sBuf, sizeof(sBuf), "%s: %02d:%02d", tr("TIEMPO RESISTIDO", "TIME SURVIVED"), sSecs / 60, sSecs % 60);
         renderArcadeText(m_renderer, sBuf, 960.0f, 430.0f, 2.4f, SDL_Color{255, 220, 50, 255}, true);
 
         const int bSecs = static_cast<int>(m_bestSurvivalSeconds);
         char bBuf[64];
-        std::snprintf(bBuf, sizeof(bBuf), "MEJOR RECORD: %02d:%02d", bSecs / 60, bSecs % 60);
+        std::snprintf(bBuf, sizeof(bBuf), "%s: %02d:%02d", tr("MEJOR RECORD", "BEST RECORD"), bSecs / 60, bSecs % 60);
         renderArcadeText(m_renderer, bBuf, 960.0f, 465.0f, 2.0f, SDL_Color{0, 230, 255, 255}, true);
     } else {
-        renderArcadeText(m_renderer, "MISION FALLIDA - FIN DE PARTIDA", 960.0f, 258.0f, 2.6f, SDL_Color{255, 255, 255, 255}, true);
+        renderArcadeText(m_renderer, tr("MISION FALLIDA - FIN DE PARTIDA", "MISSION FAILED - GAME OVER"), 960.0f, 258.0f, 2.6f, SDL_Color{255, 255, 255, 255}, true);
     }
 
     renderScore(m_renderer, 960.0f, 350.0f, m_score);
@@ -3071,8 +3178,8 @@ void Engine::renderMedalsScreen() {
     SDL_RenderFillRectF(m_renderer, &overlay);
 
     // 2. Encabezado ceremonial
-    renderArcadeText(m_renderer, "SALA DE CONDECORACIONES Y EXPEDIENTE MILITAR", 960.0f, 50.0f, 3.4f, SDL_Color{0, 230, 255, 255}, true);
-    renderArcadeText(m_renderer, "DISTINCIONES OFICIALES POR EFICACIA EN COMBATE Y DEFENSA GLOBAL", 960.0f, 92.0f, 2.0f, SDL_Color{160, 205, 225, 220}, true);
+    renderArcadeText(m_renderer, tr("SALA DE CONDECORACIONES Y EXPEDIENTE MILITAR", "HALL OF MEDALS & MILITARY RECORD"), 960.0f, 50.0f, 3.4f, SDL_Color{0, 230, 255, 255}, true);
+    renderArcadeText(m_renderer, tr("DISTINCIONES OFICIALES POR EFICACIA EN COMBATE Y DEFENSA GLOBAL", "OFFICIAL DISTINCTIONS FOR COMBAT EFFICIENCY & GLOBAL DEFENSE"), 960.0f, 92.0f, 2.0f, SDL_Color{160, 205, 225, 220}, true);
 
     // 3. Barra de Estadísticas de Servicio
     const SDL_FRect statBar{180.0f, 124.0f, 1560.0f, 44.0f};
@@ -3086,12 +3193,12 @@ void Engine::renderMedalsScreen() {
     SDL_RenderFillRectF(m_renderer, &sbB);
 
     char statBuf1[64], statBuf2[64], statBuf3[64], statBuf4[64];
-    std::snprintf(statBuf1, sizeof(statBuf1), "DERRIBOS: %llu", static_cast<unsigned long long>(m_totalEnemiesKilled));
-    std::snprintf(statBuf2, sizeof(statBuf2), "JEFES: %u", m_totalBossesDefeated);
+    std::snprintf(statBuf1, sizeof(statBuf1), "%s: %llu", tr("DERRIBOS", "KILLS"), static_cast<unsigned long long>(m_totalEnemiesKilled));
+    std::snprintf(statBuf2, sizeof(statBuf2), "%s: %u", tr("JEFES", "BOSSES"), m_totalBossesDefeated);
     std::snprintf(statBuf3, sizeof(statBuf3), "NUKES: %u", m_totalNukesUsed);
 
     const int bSecs = static_cast<int>(m_bestSurvivalSeconds);
-    std::snprintf(statBuf4, sizeof(statBuf4), "SUPERVIVENCIA: %02d:%02d", bSecs / 60, bSecs % 60);
+    std::snprintf(statBuf4, sizeof(statBuf4), "%s: %02d:%02d", tr("SUPERVIVENCIA", "SURVIVAL"), bSecs / 60, bSecs % 60);
 
     renderArcadeText(m_renderer, statBuf1, 360.0f, 138.0f, 2.0f, SDL_Color{255, 255, 255, 255}, true);
     renderArcadeText(m_renderer, statBuf2, 740.0f, 138.0f, 2.0f, SDL_Color{255, 255, 255, 255}, true);
@@ -3108,38 +3215,38 @@ void Engine::renderMedalsScreen() {
 
     MedalDef medals[6];
     // 1. 100 Derribos
-    medals[0].title = "100 DERRIBOS AEREOS";
-    medals[0].desc = "DESTRUIR 100 AERONAVES HOSTILES";
+    medals[0].title = tr("100 DERRIBOS AEREOS", "100 AERIAL KILLS");
+    medals[0].desc = tr("DESTRUIR 100 AERONAVES HOSTILES", "DESTROY 100 HOSTILE AIRCRAFT");
     medals[0].unlocked = (m_totalEnemiesKilled >= 100);
     std::snprintf(medals[0].progress, sizeof(medals[0].progress), "%llu / 100", static_cast<unsigned long long>(std::min<uint64_t>(m_totalEnemiesKilled, 100)));
 
     // 2. Cazador de Jefes
-    medals[1].title = "CAZADOR DE JEFES";
-    medals[1].desc = "DERROTAR 5 SUPERJEFES ENEMIGOS";
+    medals[1].title = tr("CAZADOR DE JEFES", "BOSS SLAYER");
+    medals[1].desc = tr("DERROTAR 5 SUPERJEFES ENEMIGOS", "DEFEAT 5 ENEMY SUPERBOSSES");
     medals[1].unlocked = (m_totalBossesDefeated >= 5);
     std::snprintf(medals[1].progress, sizeof(medals[1].progress), "%u / 5", std::min<uint32_t>(m_totalBossesDefeated, 5));
 
     // 3. Superviviente 3 Minutos
-    medals[2].title = "SUPERVIVIENTE 3 MINUTOS";
-    medals[2].desc = "RESISTIR 180s EN MODO SUPERVIVENCIA";
+    medals[2].title = tr("SUPERVIVIENTE 3 MINUTOS", "3-MINUTE SURVIVOR");
+    medals[2].desc = tr("RESISTIR 180s EN MODO SUPERVIVENCIA", "SURVIVE 180s IN SURVIVAL MODE");
     medals[2].unlocked = (m_bestSurvivalSeconds >= 180.0f);
     std::snprintf(medals[2].progress, sizeof(medals[2].progress), "%02d:%02d / 03:00", bSecs / 60, bSecs % 60);
 
     // 4. Maestro del Arsenal
-    medals[3].title = "MAESTRO DEL ARSENAL";
-    medals[3].desc = "ADQUIRIR 10 MEJORAS EN LA ARMERIA";
+    medals[3].title = tr("MAESTRO DEL ARSENAL", "ARSENAL MASTER");
+    medals[3].desc = tr("ADQUIRIR 10 MEJORAS EN LA ARMERIA", "PURCHASE 10 ARMORY UPGRADES");
     medals[3].unlocked = (m_totalUpgradesPurchased >= 10);
     std::snprintf(medals[3].progress, sizeof(medals[3].progress), "%d / 10", std::min(m_totalUpgradesPurchased, 10));
 
     // 5. Interceptor Nuclear
-    medals[4].title = "INTERCEPTOR NUCLEAR";
-    medals[4].desc = "ACTIVAR O DETONAR 10 BOMBAS NUKES";
+    medals[4].title = tr("INTERCEPTOR NUCLEAR", "NUCLEAR INTERCEPTOR");
+    medals[4].desc = tr("ACTIVAR O DETONAR 10 BOMBAS NUKES", "ACTIVATE OR DETONATE 10 NUKES");
     medals[4].unlocked = (m_totalNukesUsed >= 10);
     std::snprintf(medals[4].progress, sizeof(medals[4].progress), "%u / 10", std::min<uint32_t>(m_totalNukesUsed, 10));
 
     // 6. Veterano Nivel 25
-    medals[5].title = "VETERANO NIVEL 25";
-    medals[5].desc = "COMPLETAR LA CAMPANA HASTA NIVEL 25";
+    medals[5].title = tr("VETERANO NIVEL 25", "LEVEL 25 VETERAN");
+    medals[5].desc = tr("COMPLETAR LA CAMPANA HASTA NIVEL 25", "COMPLETE CAMPAIGN THROUGH LEVEL 25");
     medals[5].unlocked = (m_campaignCompleted || m_isCampaignWon || m_maxUnlockedLevel >= 25);
     std::snprintf(medals[5].progress, sizeof(medals[5].progress), "%d / 25", std::min(m_maxUnlockedLevel, 25));
 
@@ -3218,14 +3325,14 @@ void Engine::renderMedalsScreen() {
             const SDL_FRect stBar{cx + 25.0f, cy + 140.0f, cardW - 50.0f, 38.0f};
             SDL_SetRenderDrawColor(m_renderer, 35, 60, 45, 240);
             SDL_RenderFillRectF(m_renderer, &stBar);
-            renderArcadeText(m_renderer, "[ CONDECORACION OTORGADA ]", cx + cardW * 0.5f, cy + 152.0f, 2.1f, SDL_Color{0, 255, 140, 255}, true);
+            renderArcadeText(m_renderer, tr("[ CONDECORACION OTORGADA ]", "[ MEDAL AWARDED ]"), cx + cardW * 0.5f, cy + 152.0f, 2.1f, SDL_Color{0, 255, 140, 255}, true);
         } else {
             const SDL_FRect stBar{cx + 25.0f, cy + 140.0f, cardW - 50.0f, 38.0f};
             SDL_SetRenderDrawColor(m_renderer, 24, 28, 35, 240);
             SDL_RenderFillRectF(m_renderer, &stBar);
 
             char progBuf[64];
-            std::snprintf(progBuf, sizeof(progBuf), "EN CURSO: %s", medals[i].progress);
+            std::snprintf(progBuf, sizeof(progBuf), "%s: %s", tr("EN CURSO", "PROGRESS"), medals[i].progress);
             renderArcadeText(m_renderer, progBuf, cx + cardW * 0.5f, cy + 152.0f, 2.0f, SDL_Color{255, 180, 50, 230}, true);
         }
     }
@@ -3250,7 +3357,7 @@ void Engine::renderMedalsScreen() {
     SDL_RenderFillRectF(m_renderer, &bbL);
     SDL_RenderFillRectF(m_renderer, &bbR);
 
-    renderArcadeText(m_renderer, "<-- VOLVER AL MENU PRINCIPAL [ESC / ENTER]", 960.0f, backY + 18.0f, 2.4f, SDL_Color{255, 255, 255, 255}, true);
+    renderArcadeText(m_renderer, tr("<-- VOLVER AL MENU PRINCIPAL [ESC / ENTER]", "<-- BACK TO MAIN MENU [ESC / ENTER]"), 960.0f, backY + 18.0f, 2.4f, SDL_Color{255, 255, 255, 255}, true);
 }
 
 void Engine::renderCampaignVictoryScreen() {
@@ -3480,16 +3587,16 @@ void Engine::renderCampaignVictoryScreen() {
 
 void Engine::renderArcadeTitle(float centerX, float centerY) {
     // Sombra de impacto
-    renderArcadeText(m_renderer, "ATOMIC WEAPON", centerX + 4.0f, centerY + 4.0f, 7.0f, SDL_Color{8, 12, 16, 255}, true);
+    renderArcadeText(m_renderer, "ATOMIC TANK", centerX + 4.0f, centerY + 4.0f, 7.0f, SDL_Color{8, 12, 16, 255}, true);
 
     // Contorno oscuro táctico
-    renderArcadeText(m_renderer, "ATOMIC WEAPON", centerX - 2.0f, centerY, 7.0f, SDL_Color{20, 32, 24, 255}, true);
-    renderArcadeText(m_renderer, "ATOMIC WEAPON", centerX + 2.0f, centerY, 7.0f, SDL_Color{20, 32, 24, 255}, true);
-    renderArcadeText(m_renderer, "ATOMIC WEAPON", centerX, centerY - 2.0f, 7.0f, SDL_Color{20, 32, 24, 255}, true);
-    renderArcadeText(m_renderer, "ATOMIC WEAPON", centerX, centerY + 2.0f, 7.0f, SDL_Color{20, 32, 24, 255}, true);
+    renderArcadeText(m_renderer, "ATOMIC TANK", centerX - 2.0f, centerY, 7.0f, SDL_Color{20, 32, 24, 255}, true);
+    renderArcadeText(m_renderer, "ATOMIC TANK", centerX + 2.0f, centerY, 7.0f, SDL_Color{20, 32, 24, 255}, true);
+    renderArcadeText(m_renderer, "ATOMIC TANK", centerX, centerY - 2.0f, 7.0f, SDL_Color{20, 32, 24, 255}, true);
+    renderArcadeText(m_renderer, "ATOMIC TANK", centerX, centerY + 2.0f, 7.0f, SDL_Color{20, 32, 24, 255}, true);
 
     // Frente brillante en Oro / Amarillo Militar
-    renderArcadeText(m_renderer, "ATOMIC WEAPON", centerX, centerY, 7.0f, SDL_Color{255, 220, 40, 255}, true);
+    renderArcadeText(m_renderer, "ATOMIC TANK", centerX, centerY, 7.0f, SDL_Color{255, 220, 40, 255}, true);
 
     // Franjas de peligro (Hazard Stripes) a la izquierda y derecha
     for (int s = 0; s < 4; ++s) {
@@ -3571,7 +3678,8 @@ void Engine::renderLoadingScreen() {
     SDL_RenderFillRectF(m_renderer, &bRight);
 
     // Relleno progresivo
-    const float progressRatio = std::clamp(m_loadingTimer / 1.8f, 0.0f, 1.0f);
+    const float duration = std::max(0.1f, m_loadingDuration);
+    const float progressRatio = std::clamp(m_loadingTimer / duration, 0.0f, 1.0f);
     const float fillW = (barW - 8.0f) * progressRatio;
     if (fillW > 0.0f) {
         const SDL_FRect fillBar{barX + 4.0f, barY + 4.0f, fillW, barH - 8.0f};
@@ -3586,8 +3694,32 @@ void Engine::renderLoadingScreen() {
         SDL_RenderFillRectF(m_renderer, &tick);
     }
 
-    // Texto descriptivo
-    renderArcadeText(m_renderer, "INICIALIZANDO PROTOCOLOS DE DEFENSA MILITAR", 960.0f, 620.0f, 2.4f, SDL_Color{0, 230, 255, 255}, true);
+    // Texto descriptivo según destino de carga (Inicio vs Misión)
+    if (m_loadingTargetState == GameState::Playing) {
+        char missionTitle[96];
+        if (m_isSurvivalMode) {
+            std::snprintf(missionTitle, sizeof(missionTitle), "%s",
+                          tr("DESPLEGANDO MODO SUPERVIVENCIA", "DEPLOYING SURVIVAL MODE"));
+        } else {
+            const auto& pal = m_levelManager.getCurrentPalette();
+            std::snprintf(missionTitle, sizeof(missionTitle), "%s %d - %.*s",
+                          tr("CARGANDO MISION: SECTOR", "LOADING MISSION: SECTOR"),
+                          m_levelManager.getCurrentLevel(),
+                          static_cast<int>(pal.sectorName.size()),
+                          pal.sectorName.data());
+        }
+        renderArcadeText(m_renderer, missionTitle, 960.0f, 615.0f, 2.4f, SDL_Color{0, 230, 255, 255}, true);
+        renderArcadeText(m_renderer,
+                         tr("CALIBRANDO CANONES Y SISTEMAS DE PUNTERIA", "CALIBRATING CANNONS AND TARGETING SYSTEMS"),
+                         960.0f, 755.0f, 1.9f, SDL_Color{140, 180, 210, 200}, true);
+    } else {
+        renderArcadeText(m_renderer,
+                         tr("INICIALIZANDO PROTOCOLOS DE DEFENSA MILITAR", "INITIALIZING MILITARY DEFENSE PROTOCOLS"),
+                         960.0f, 615.0f, 2.4f, SDL_Color{0, 230, 255, 255}, true);
+        renderArcadeText(m_renderer,
+                         tr("PREPARANDO ARSENAL TACTICO Y REJILLAS DE RADAR", "PREPARING TACTICAL ARSENAL AND RADAR GRIDS"),
+                         960.0f, 755.0f, 1.9f, SDL_Color{140, 180, 210, 200}, true);
+    }
 
     const int pct = static_cast<int>(progressRatio * 100.0f);
     char pctBuffer[16];
@@ -3597,8 +3729,6 @@ void Engine::renderLoadingScreen() {
     pctBuffer[3] = '%';
     pctBuffer[4] = '\0';
     renderArcadeText(m_renderer, (pct >= 100) ? "100%" : (pctBuffer[1] != '0' ? &pctBuffer[1] : &pctBuffer[2]), 960.0f, 710.0f, 2.8f, SDL_Color{255, 225, 45, 255}, true);
-
-    renderArcadeText(m_renderer, "PREPARANDO ARSENAL TACTICO Y REJILLAS DE RADAR", 960.0f, 755.0f, 1.9f, SDL_Color{140, 180, 210, 200}, true);
 }
 
 void Engine::renderMainMenuScreen() {
@@ -3617,7 +3747,7 @@ void Engine::renderMainMenuScreen() {
     renderArcadeTitle(960.0f, 110.0f);
 
     // Panel de HIGH SCORE
-    renderArcadeText(m_renderer, "RECORD DE COMBATE - HIGH SCORE", 960.0f, 220.0f, 2.2f, SDL_Color{0, 220, 240, 255}, true);
+    renderArcadeText(m_renderer, tr("RECORD DE COMBATE - HIGH SCORE", "COMBAT RECORD - HIGH SCORE"), 960.0f, 220.0f, 2.2f, SDL_Color{0, 220, 240, 255}, true);
     renderScore(m_renderer, 960.0f, 246.0f, m_highScore);
 
     // 6 Botones Grandes Interactivos
@@ -3627,12 +3757,12 @@ void Engine::renderMainMenuScreen() {
     constexpr float btnYs[6] = {300.0f, 368.0f, 436.0f, 504.0f, 572.0f, 640.0f};
 
     const char* labels[6] = {
-        (m_maxUnlockedLevel > 1) ? "CONTINUAR CAMPANA" : "NUEVA PARTIDA",
-        "MODO SUPERVIVENCIA",
-        "SELECCIONAR NIVEL",
-        "MEDALLAS Y RECORDS",
-        "AJUSTES",
-        "SALIR DEL JUEGO"
+        (m_maxUnlockedLevel > 1) ? tr("CONTINUAR CAMPANA", "CONTINUE CAMPAIGN") : tr("NUEVA PARTIDA", "NEW CAMPAIGN"),
+        tr("MODO SUPERVIVENCIA", "SURVIVAL MODE"),
+        tr("SELECCIONAR NIVEL", "SELECT LEVEL"),
+        tr("MEDALLAS Y RECORDS", "MEDALS & RECORDS"),
+        tr("AJUSTES", "SETTINGS"),
+        tr("SALIR DEL JUEGO", "EXIT GAME")
     };
 
     for (int i = 0; i < 6; ++i) {
@@ -3674,14 +3804,14 @@ void Engine::renderMainMenuScreen() {
 
         // Subtexto
         if (i == 0 && m_maxUnlockedLevel > 1) {
-            renderArcadeText(m_renderer, "DESDE SECTOR DESBLOQUEADO", 960.0f, by + 39.0f, 1.4f, SDL_Color{0, 240, 150, 255}, true);
+            renderArcadeText(m_renderer, tr("DESDE SECTOR DESBLOQUEADO", "FROM UNLOCKED SECTOR"), 960.0f, by + 39.0f, 1.4f, SDL_Color{0, 240, 150, 255}, true);
         } else if (i == 1) {
-            renderArcadeText(m_renderer, "OLEADAS INFINITAS Y JEFES CADA 60s", 960.0f, by + 39.0f, 1.3f, SDL_Color{255, 180, 40, 230}, true);
+            renderArcadeText(m_renderer, tr("OLEADAS INFINITAS Y JEFES CADA 60s", "ENDLESS WAVES & BOSSES EVERY 60s"), 960.0f, by + 39.0f, 1.3f, SDL_Color{255, 180, 40, 230}, true);
         }
     }
 
     // Pie de pantalla con instrucciones
-    renderArcadeText(m_renderer, "CONTROLES: TOUCH / MOUSE / FLECHAS (W/S) / ENTER O BOTON A", 960.0f, 980.0f, 2.0f, SDL_Color{120, 160, 185, 200}, true);
+    renderArcadeText(m_renderer, tr("CONTROLES: TOUCH / MOUSE / FLECHAS (W/S) / ENTER O BOTON A", "CONTROLS: TOUCH / MOUSE / ARROWS (W/S) / ENTER OR BUTTON A"), 960.0f, 980.0f, 2.0f, SDL_Color{120, 160, 185, 200}, true);
 }
 
 void Engine::renderLevelSelectScreen() {
@@ -3693,8 +3823,8 @@ void Engine::renderLevelSelectScreen() {
     SDL_RenderFillRectF(m_renderer, &overlay);
 
     // Encabezado
-    renderArcadeText(m_renderer, "SELECCION DE SECTOR MILITAR", 960.0f, 65.0f, 4.0f, SDL_Color{0, 230, 255, 255}, true);
-    renderArcadeText(m_renderer, "SELECCIONA CUALQUIER MISION DESBLOQUEADA (1 AL 25)", 960.0f, 115.0f, 2.4f, SDL_Color{160, 205, 225, 230}, true);
+    renderArcadeText(m_renderer, tr("SELECCION DE SECTOR MILITAR", "MILITARY SECTOR SELECTION"), 960.0f, 65.0f, 4.0f, SDL_Color{0, 230, 255, 255}, true);
+    renderArcadeText(m_renderer, tr("SELECCIONA CUALQUIER MISION DESBLOQUEADA (1 AL 25)", "SELECT ANY UNLOCKED MISSION (1 TO 25)"), 960.0f, 115.0f, 2.4f, SDL_Color{160, 205, 225, 230}, true);
 
     // Cuadrícula 5x5 de botones para Niveles 1 al 25
     constexpr float gridStartX = 637.0f;
@@ -3803,7 +3933,7 @@ void Engine::renderLevelSelectScreen() {
     SDL_RenderFillRectF(m_renderer, &bkTop);
     SDL_RenderFillRectF(m_renderer, &bkBot);
 
-    renderArcadeText(m_renderer, "<-- VOLVER AL MENU", 960.0f, 668.0f, 2.8f, isBackSelected ? SDL_Color{255, 255, 240, 255} : SDL_Color{180, 220, 235, 240}, true);
+    renderArcadeText(m_renderer, tr("<-- VOLVER AL MENU", "<-- BACK TO MENU"), 960.0f, 668.0f, 2.8f, isBackSelected ? SDL_Color{255, 255, 240, 255} : SDL_Color{180, 220, 235, 240}, true);
 }
 
 void Engine::renderPauseButton() {
@@ -3857,7 +3987,7 @@ void Engine::renderPauseScreen() {
     const SDL_FRect headerBar{640.0f, 180.0f, 640.0f, 60.0f};
     SDL_SetRenderDrawColor(m_renderer, 28, 38, 48, 255);
     SDL_RenderFillRectF(m_renderer, &headerBar);
-    renderArcadeText(m_renderer, "MISION EN PAUSA", 960.0f, 196.0f, 3.8f, SDL_Color{255, 220, 50, 255}, true);
+    renderArcadeText(m_renderer, tr("MISION EN PAUSA", "MISSION PAUSED"), 960.0f, 196.0f, 3.8f, SDL_Color{255, 220, 50, 255}, true);
 
     // 4 Botones de Pausa
     constexpr float btnX = 720.0f;
@@ -3865,10 +3995,10 @@ void Engine::renderPauseScreen() {
     constexpr float btnH = 60.0f;
     constexpr float btnYs[4] = {270.0f, 345.0f, 420.0f, 495.0f};
     const char* labels[4] = {
-        "REANUDAR PARTIDA",
-        "REINICIAR SECTOR",
-        "AJUSTES",
-        "SALIR AL MENU"
+        tr("REANUDAR PARTIDA", "RESUME MISSION"),
+        tr("REINICIAR SECTOR", "RESTART SECTOR"),
+        tr("AJUSTES", "SETTINGS"),
+        tr("SALIR AL MENU", "EXIT TO MENU")
     };
 
     for (int i = 0; i < 4; ++i) {
@@ -3896,7 +4026,7 @@ void Engine::renderPauseScreen() {
         renderArcadeText(m_renderer, labels[i], 960.0f, by + 20.0f, 3.0f, txtColor, true);
     }
 
-    renderArcadeText(m_renderer, "PRESIONA ESC / P O BOTON START PARA REANUDAR", 960.0f, 620.0f, 1.8f, SDL_Color{130, 175, 205, 220}, true);
+    renderArcadeText(m_renderer, tr("PRESIONA ESC / P O BOTON START PARA REANUDAR", "PRESS ESC / P OR START BUTTON TO RESUME"), 960.0f, 620.0f, 1.8f, SDL_Color{130, 175, 205, 220}, true);
 }
 
 void Engine::renderSettingsScreen() {
@@ -3923,7 +4053,7 @@ void Engine::renderSettingsScreen() {
     SDL_RenderFillRectF(m_renderer, &mR);
 
     // Encabezado
-    renderArcadeText(m_renderer, "AJUSTES DE CONFIGURACION", 960.0f, 150.0f, 3.8f, SDL_Color{255, 220, 50, 255}, true);
+    renderArcadeText(m_renderer, tr("AJUSTES DE CONFIGURACION", "CONFIGURATION SETTINGS"), 960.0f, 150.0f, 3.8f, SDL_Color{255, 220, 50, 255}, true);
     const SDL_FRect divider{540.0f, 195.0f, 840.0f, 3.0f};
     SDL_SetRenderDrawColor(m_renderer, 0, 215, 230, 200);
     SDL_RenderFillRectF(m_renderer, &divider);
@@ -3932,19 +4062,19 @@ void Engine::renderSettingsScreen() {
     // Fila 0: Volumen de Efectos (SFX)
     // -------------------------------------------------------------------------
     const bool isRow0Selected = (m_settingsSelectedIndex == 0);
-    renderArcadeText(m_renderer, "VOLUMEN EFECTOS SFX", 520.0f, 234.0f, 2.4f, isRow0Selected ? SDL_Color{255, 220, 50, 255} : SDL_Color{200, 225, 240, 255});
+    renderArcadeText(m_renderer, tr("VOLUMEN EFECTOS SFX", "SFX VOLUME"), 520.0f, 224.0f, 2.4f, isRow0Selected ? SDL_Color{255, 220, 50, 255} : SDL_Color{200, 225, 240, 255});
 
     // Botón [-]
-    const SDL_FRect sfxMinus{860.0f, 222.0f, 44.0f, 44.0f};
+    const SDL_FRect sfxMinus{860.0f, 212.0f, 44.0f, 44.0f};
     SDL_SetRenderDrawColor(m_renderer, 30, 42, 54, 250);
     SDL_RenderFillRectF(m_renderer, &sfxMinus);
-    renderArcadeText(m_renderer, "-", 882.0f, 232.0f, 3.0f, SDL_Color{255, 255, 255, 255}, true);
+    renderArcadeText(m_renderer, "-", 882.0f, 222.0f, 3.0f, SDL_Color{255, 255, 255, 255}, true);
 
     // 10 Barras de Volumen
     for (int i = 0; i < 10; ++i) {
         const float barX = 916.0f + static_cast<float>(i) * 32.0f;
         const bool isLit = (i * 10 < m_sfxVolume);
-        const SDL_FRect bar{barX, 224.0f, 26.0f, 40.0f};
+        const SDL_FRect bar{barX, 214.0f, 26.0f, 40.0f};
         if (isLit) {
             SDL_SetRenderDrawColor(m_renderer, 0, 230, 140, 255);
         } else {
@@ -3954,28 +4084,28 @@ void Engine::renderSettingsScreen() {
     }
 
     // Botón [+]
-    const SDL_FRect sfxPlus{1246.0f, 222.0f, 44.0f, 44.0f};
+    const SDL_FRect sfxPlus{1246.0f, 212.0f, 44.0f, 44.0f};
     SDL_SetRenderDrawColor(m_renderer, 30, 42, 54, 250);
     SDL_RenderFillRectF(m_renderer, &sfxPlus);
-    renderArcadeText(m_renderer, "+", 1268.0f, 232.0f, 3.0f, SDL_Color{255, 255, 255, 255}, true);
+    renderArcadeText(m_renderer, "+", 1268.0f, 222.0f, 3.0f, SDL_Color{255, 255, 255, 255}, true);
 
     // -------------------------------------------------------------------------
     // Fila 1: Volumen de Música
     // -------------------------------------------------------------------------
     const bool isRow1Selected = (m_settingsSelectedIndex == 1);
-    renderArcadeText(m_renderer, "VOLUMEN MUSICA", 520.0f, 324.0f, 2.4f, isRow1Selected ? SDL_Color{255, 220, 50, 255} : SDL_Color{200, 225, 240, 255});
+    renderArcadeText(m_renderer, tr("VOLUMEN MUSICA", "MUSIC VOLUME"), 520.0f, 304.0f, 2.4f, isRow1Selected ? SDL_Color{255, 220, 50, 255} : SDL_Color{200, 225, 240, 255});
 
     // Botón [-]
-    const SDL_FRect musMinus{860.0f, 312.0f, 44.0f, 44.0f};
+    const SDL_FRect musMinus{860.0f, 292.0f, 44.0f, 44.0f};
     SDL_SetRenderDrawColor(m_renderer, 30, 42, 54, 250);
     SDL_RenderFillRectF(m_renderer, &musMinus);
-    renderArcadeText(m_renderer, "-", 882.0f, 322.0f, 3.0f, SDL_Color{255, 255, 255, 255}, true);
+    renderArcadeText(m_renderer, "-", 882.0f, 302.0f, 3.0f, SDL_Color{255, 255, 255, 255}, true);
 
     // 10 Barras de Volumen
     for (int i = 0; i < 10; ++i) {
         const float barX = 916.0f + static_cast<float>(i) * 32.0f;
         const bool isLit = (i * 10 < m_musicVolume);
-        const SDL_FRect bar{barX, 314.0f, 26.0f, 40.0f};
+        const SDL_FRect bar{barX, 294.0f, 26.0f, 40.0f};
         if (isLit) {
             SDL_SetRenderDrawColor(m_renderer, 0, 215, 255, 255);
         } else {
@@ -3985,88 +4115,134 @@ void Engine::renderSettingsScreen() {
     }
 
     // Botón [+]
-    const SDL_FRect musPlus{1246.0f, 312.0f, 44.0f, 44.0f};
+    const SDL_FRect musPlus{1246.0f, 292.0f, 44.0f, 44.0f};
     SDL_SetRenderDrawColor(m_renderer, 30, 42, 54, 250);
     SDL_RenderFillRectF(m_renderer, &musPlus);
-    renderArcadeText(m_renderer, "+", 1268.0f, 322.0f, 3.0f, SDL_Color{255, 255, 255, 255}, true);
+    renderArcadeText(m_renderer, "+", 1268.0f, 302.0f, 3.0f, SDL_Color{255, 255, 255, 255}, true);
 
     // -------------------------------------------------------------------------
     // Fila 2: Sacudida de Pantalla (Screen Shake)
     // -------------------------------------------------------------------------
     const bool isRow2Selected = (m_settingsSelectedIndex == 2);
-    renderArcadeText(m_renderer, "SACUDIDA DE PANTALLA", 520.0f, 414.0f, 2.4f, isRow2Selected ? SDL_Color{255, 220, 50, 255} : SDL_Color{200, 225, 240, 255});
+    renderArcadeText(m_renderer, tr("SACUDIDA DE PANTALLA", "SCREEN SHAKE"), 520.0f, 384.0f, 2.4f, isRow2Selected ? SDL_Color{255, 220, 50, 255} : SDL_Color{200, 225, 240, 255});
 
-    const SDL_FRect shakeToggle{916.0f, 402.0f, 374.0f, 44.0f};
+    const SDL_FRect shakeToggle{916.0f, 372.0f, 374.0f, 44.0f};
     if (m_screenShakeEnabled) {
         SDL_SetRenderDrawColor(m_renderer, 0, 160, 75, 255);
         SDL_RenderFillRectF(m_renderer, &shakeToggle);
-        const SDL_FRect shB{916.0f, 402.0f, 374.0f, 2.0f};
+        const SDL_FRect shB{916.0f, 372.0f, 374.0f, 2.0f};
         SDL_SetRenderDrawColor(m_renderer, 60, 255, 140, 255);
         SDL_RenderFillRectF(m_renderer, &shB);
-        renderArcadeText(m_renderer, "ACTIVADO  (ON)", 1103.0f, 414.0f, 2.5f, SDL_Color{255, 255, 255, 255}, true);
+        renderArcadeText(m_renderer, tr("ACTIVADO  (ON)", "ENABLED  (ON)"), 1103.0f, 384.0f, 2.5f, SDL_Color{255, 255, 255, 255}, true);
     } else {
         SDL_SetRenderDrawColor(m_renderer, 150, 35, 35, 255);
         SDL_RenderFillRectF(m_renderer, &shakeToggle);
-        const SDL_FRect shB{916.0f, 402.0f, 374.0f, 2.0f};
+        const SDL_FRect shB{916.0f, 372.0f, 374.0f, 2.0f};
         SDL_SetRenderDrawColor(m_renderer, 255, 90, 90, 255);
         SDL_RenderFillRectF(m_renderer, &shB);
-        renderArcadeText(m_renderer, "DESACTIVADO (OFF)", 1103.0f, 414.0f, 2.5f, SDL_Color{255, 255, 255, 255}, true);
+        renderArcadeText(m_renderer, tr("DESACTIVADO (OFF)", "DISABLED (OFF)"), 1103.0f, 384.0f, 2.5f, SDL_Color{255, 255, 255, 255}, true);
     }
 
     // -------------------------------------------------------------------------
     // Fila 3: Opacidad de UI Táctil (Baja, Media, Alta)
     // -------------------------------------------------------------------------
     const bool isRow3Selected = (m_settingsSelectedIndex == 3);
-    renderArcadeText(m_renderer, "OPACIDAD HUD TACTIL", 520.0f, 504.0f, 2.4f, isRow3Selected ? SDL_Color{255, 220, 50, 255} : SDL_Color{200, 225, 240, 255});
+    renderArcadeText(m_renderer, tr("OPACIDAD HUD TACTIL", "TOUCH HUD OPACITY"), 520.0f, 464.0f, 2.4f, isRow3Selected ? SDL_Color{255, 220, 50, 255} : SDL_Color{200, 225, 240, 255});
 
-    const char* opacLabels[3] = {"BAJA", "MEDIA", "ALTA"};
+    const char* opacLabels[3] = {
+        tr("BAJA", "LOW"),
+        tr("MEDIA", "MED"),
+        tr("ALTA", "HIGH")
+    };
     for (int i = 0; i < 3; ++i) {
         const float ox = 916.0f + static_cast<float>(i) * 128.0f;
         const bool isActive = (m_touchOpacityLevel == i);
-        const SDL_FRect opBtn{ox, 492.0f, 118.0f, 44.0f};
+        const SDL_FRect opBtn{ox, 452.0f, 118.0f, 44.0f};
 
         if (isActive) {
             SDL_SetRenderDrawColor(m_renderer, 0, 160, 85, 255);
             SDL_RenderFillRectF(m_renderer, &opBtn);
-            const SDL_FRect opBorder{ox, 492.0f, 118.0f, 3.0f};
+            const SDL_FRect opBorder{ox, 452.0f, 118.0f, 3.0f};
             SDL_SetRenderDrawColor(m_renderer, 60, 255, 140, 255);
             SDL_RenderFillRectF(m_renderer, &opBorder);
         } else {
             SDL_SetRenderDrawColor(m_renderer, 28, 38, 48, 250);
             SDL_RenderFillRectF(m_renderer, &opBtn);
-            const SDL_FRect opBorder{ox, 492.0f, 118.0f, 2.0f};
+            const SDL_FRect opBorder{ox, 452.0f, 118.0f, 2.0f};
             SDL_SetRenderDrawColor(m_renderer, 60, 85, 110, 200);
             SDL_RenderFillRectF(m_renderer, &opBorder);
         }
 
-        renderArcadeText(m_renderer, opacLabels[i], ox + 59.0f, 504.0f, 2.4f, isActive ? SDL_Color{255, 255, 255, 255} : SDL_Color{160, 190, 210, 220}, true);
+        renderArcadeText(m_renderer, opacLabels[i], ox + 59.0f, 464.0f, 2.4f, isActive ? SDL_Color{255, 255, 255, 255} : SDL_Color{160, 190, 210, 220}, true);
     }
 
     // -------------------------------------------------------------------------
-    // Fila 4: Botón "VOLVER"
+    // Fila 4: Idioma (Español / Inglés)
     // -------------------------------------------------------------------------
-    const bool isBackSelected = (m_settingsSelectedIndex == 4);
-    const SDL_FRect backBase{740.0f, 620.0f, 440.0f, 60.0f};
+    const bool isRow4Selected = (m_settingsSelectedIndex == 4);
+    renderArcadeText(m_renderer, tr("IDIOMA", "LANGUAGE"), 520.0f, 544.0f, 2.4f, isRow4Selected ? SDL_Color{255, 220, 50, 255} : SDL_Color{200, 225, 240, 255});
+
+    const char* langLabels[2] = {"ESPANOL", "ENGLISH"};
+    for (int i = 0; i < 2; ++i) {
+        const float lx = 916.0f + static_cast<float>(i) * 195.0f;
+        const bool isActive = (static_cast<int>(m_language) == i);
+        const SDL_FRect langBtn{lx, 532.0f, 179.0f, 44.0f};
+
+        if (isActive) {
+            SDL_SetRenderDrawColor(m_renderer, 0, 160, 85, 255);
+            SDL_RenderFillRectF(m_renderer, &langBtn);
+            const SDL_FRect langBorder{lx, 532.0f, 179.0f, 3.0f};
+            SDL_SetRenderDrawColor(m_renderer, 60, 255, 140, 255);
+            SDL_RenderFillRectF(m_renderer, &langBorder);
+        } else {
+            SDL_SetRenderDrawColor(m_renderer, 28, 38, 48, 250);
+            SDL_RenderFillRectF(m_renderer, &langBtn);
+            const SDL_FRect langBorder{lx, 532.0f, 179.0f, 2.0f};
+            SDL_SetRenderDrawColor(m_renderer, 60, 85, 110, 200);
+            SDL_RenderFillRectF(m_renderer, &langBorder);
+        }
+
+        renderArcadeText(m_renderer, langLabels[i], lx + 89.5f, 544.0f, 2.3f, isActive ? SDL_Color{255, 255, 255, 255} : SDL_Color{160, 190, 210, 220}, true);
+    }
+
+    // -------------------------------------------------------------------------
+    // Fila 5: Botón "GUARDAR Y VOLVER"
+    // -------------------------------------------------------------------------
+    const bool isBackSelected = (m_settingsSelectedIndex == 5);
+    const SDL_FRect backBase{740.0f, 635.0f, 440.0f, 60.0f};
     SDL_SetRenderDrawColor(m_renderer, isBackSelected ? 35 : 22, isBackSelected ? 50 : 30, isBackSelected ? 65 : 40, 250);
     SDL_RenderFillRectF(m_renderer, &backBase);
 
-    const SDL_FRect bkTop{740.0f, 620.0f, 440.0f, isBackSelected ? 4.0f : 2.0f};
-    const SDL_FRect bkBot{740.0f, 676.0f, 440.0f, isBackSelected ? 4.0f : 2.0f};
+    const SDL_FRect bkTop{740.0f, 635.0f, 440.0f, isBackSelected ? 4.0f : 2.0f};
+    const SDL_FRect bkBot{740.0f, 691.0f, 440.0f, isBackSelected ? 4.0f : 2.0f};
     const SDL_Color bkColor = isBackSelected ? SDL_Color{255, 215, 0, 255} : SDL_Color{0, 215, 120, 240};
     SDL_SetRenderDrawColor(m_renderer, bkColor.r, bkColor.g, bkColor.b, bkColor.a);
     SDL_RenderFillRectF(m_renderer, &bkTop);
     SDL_RenderFillRectF(m_renderer, &bkBot);
 
     if (isBackSelected) {
-        renderArcadeText(m_renderer, ">>", 764.0f, 638.0f, 2.8f, SDL_Color{255, 220, 50, 255});
-        renderArcadeText(m_renderer, "<<", 1146.0f, 638.0f, 2.8f, SDL_Color{255, 220, 50, 255});
+        renderArcadeText(m_renderer, ">>", 764.0f, 653.0f, 2.8f, SDL_Color{255, 220, 50, 255});
+        renderArcadeText(m_renderer, "<<", 1146.0f, 653.0f, 2.8f, SDL_Color{255, 220, 50, 255});
     }
 
-    renderArcadeText(m_renderer, "<-- GUARDAR Y VOLVER", 960.0f, 638.0f, 2.8f, isBackSelected ? SDL_Color{255, 255, 240, 255} : SDL_Color{180, 220, 235, 240}, true);
+    renderArcadeText(m_renderer, tr("<-- GUARDAR Y VOLVER", "<-- SAVE AND RETURN"), 960.0f, 653.0f, 2.8f, isBackSelected ? SDL_Color{255, 255, 240, 255} : SDL_Color{180, 220, 235, 240}, true);
 }
 
 void Engine::render() {
-    // 1. Limpiar el exterior (letterbox) en negro puro
+    // Escalar dinámicamente al tamaño completo de salida (pantalla completa extendida)
+    int outW = LOGICAL_WIDTH;
+    int outH = LOGICAL_HEIGHT;
+    SDL_GetRendererOutputSize(m_renderer, &outW, &outH);
+    if (outW > 0 && outH > 0) {
+        SDL_RenderSetScale(
+            m_renderer,
+            static_cast<float>(outW) / static_cast<float>(LOGICAL_WIDTH),
+            static_cast<float>(outH) / static_cast<float>(LOGICAL_HEIGHT)
+        );
+    }
+
+    // 1. Limpiar el lienzo completo
+    SDL_RenderSetViewport(m_renderer, nullptr);
     SDL_SetRenderDrawColor(m_renderer, 0, 0, 0, 255);
     SDL_RenderClear(m_renderer);
 

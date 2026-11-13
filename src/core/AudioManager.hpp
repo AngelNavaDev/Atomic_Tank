@@ -28,6 +28,7 @@ public:
     void playPowerUp();
     void playAlert();
     void playNuke();
+    void stopAllSfx();
 
     void startMusic();
     void stopMusic();
@@ -53,6 +54,14 @@ private:
     bool m_initialized{false};
     int m_sfxVolume{80};
     int m_musicVolume{80};
+
+    uint32_t m_lastShootTick{0};
+    uint32_t m_lastHitTick{0};
+    uint32_t m_lastExplosionTick{0};
+    uint32_t m_lastLargeExplosionTick{0};
+    uint32_t m_lastPowerUpTick{0};
+    uint32_t m_lastAlertTick{0};
+    int m_explosionChannelToggle{0};
 
     Mix_Chunk* m_shootChunk{nullptr};
     Mix_Chunk* m_explosionChunk{nullptr};

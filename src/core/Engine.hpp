@@ -31,6 +31,11 @@ enum class GameState {
     Victory
 };
 
+enum class Language : uint8_t {
+    Spanish = 0,
+    English = 1
+};
+
 class Engine {
 public:
     static constexpr int LOGICAL_WIDTH{1920};
@@ -61,6 +66,12 @@ private:
 
     void saveProgress();
     void loadProgress();
+    void detectSystemLanguage();
+    void startLoadingScreen(GameState targetState, float duration = 1.35f);
+
+    [[nodiscard]] const char* tr(const char* es, const char* en) const noexcept {
+        return (m_language == Language::Spanish) ? es : en;
+    }
 
     void render();
     void renderHUD();
@@ -86,7 +97,9 @@ private:
     // Máquina de estados del juego
     GameState m_gameState{GameState::Loading};
     GameState m_previousState{GameState::MainMenu};
+    GameState m_loadingTargetState{GameState::MainMenu};
     float m_loadingTimer{0.0f};
+    float m_loadingDuration{1.8f};
 
     // Progreso persistente y récord
     int m_maxUnlockedLevel{1};
@@ -108,6 +121,8 @@ private:
     int m_musicVolume{80};
     bool m_screenShakeEnabled{true};
     int m_touchOpacityLevel{1};
+    Language m_language{Language::Spanish};
+    bool m_languageUserSet{false};
 
     // Índices de selección para navegación en menús (Gamepad / Teclado)
     int m_mainMenuSelectedIndex{0};

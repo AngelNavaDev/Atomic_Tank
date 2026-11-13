@@ -5,7 +5,7 @@ int main(int argc, char* argv[]) {
     (void)argv;
 
     Core::Engine engine{};
-    if (!engine.init("Atomic Weapon", 1280, 720)) {
+    if (!engine.init("Atomic Tank", 1920, 1080)) {
         return 1;
     }
 
